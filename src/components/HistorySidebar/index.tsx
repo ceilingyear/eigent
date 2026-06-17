@@ -63,11 +63,12 @@ export default function HistorySidebar() {
   } | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [currentProjectId, setCurrentProjectId] = useState('');
+  const chatStoreUpdateCount = chatStore?.updateCount;
 
   useEffect(() => {
-    if (!chatStore) return;
+    if (chatStoreUpdateCount === undefined) return;
     fetchGroupedHistoryTasks(setHistoryTasks);
-  }, [chatStore?.updateCount]);
+  }, [chatStoreUpdateCount]);
 
   // Group ongoing tasks by project
   const ongoingProjects = useMemo(() => {
@@ -165,7 +166,8 @@ export default function HistorySidebar() {
       question,
       historyId,
       taskIdsList,
-      project?.project_name
+      project?.project_name,
+      project?.tasks
     );
   };
 

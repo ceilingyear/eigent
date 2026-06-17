@@ -69,6 +69,7 @@ export interface BoxHeaderConfirmProps {
   onEdit?: () => void;
   className?: string;
   loading?: boolean;
+  startTaskCountdown?: number | null;
 }
 
 export const BoxHeaderConfirm = ({
@@ -77,6 +78,7 @@ export const BoxHeaderConfirm = ({
   onEdit,
   className,
   loading = false,
+  startTaskCountdown = null,
 }: BoxHeaderConfirmProps) => {
   const { t } = useTranslation();
   return (
@@ -113,7 +115,9 @@ export const BoxHeaderConfirm = ({
           onClick={onStartTask}
           disabled={loading}
         >
-          {t('chat.start-task')}
+          {startTaskCountdown !== null
+            ? `${t('chat.start-task')} (${startTaskCountdown}s)`
+            : t('chat.start-task')}
         </Button>
       </div>
     </div>

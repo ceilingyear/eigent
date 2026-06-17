@@ -165,7 +165,7 @@ export function UserMessageCard({
                     <div
                       key={'attache-' + file.fileName}
                       className={cn(
-                        'relative box-border flex h-auto max-w-32 cursor-pointer items-center gap-0.5 rounded-lg bg-tag-surface transition-colors duration-300 hover:bg-tag-surface-hover'
+                        'relative box-border flex h-auto max-w-32 cursor-pointer items-center gap-0.5 rounded-lg bg-tag-surface px-1 pr-3 transition-colors duration-300 hover:bg-tag-surface-hover'
                       )}
                       onMouseEnter={() => setHoveredFilePath(file.filePath)}
                       onMouseLeave={() =>

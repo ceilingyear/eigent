@@ -39,6 +39,7 @@ import {
   AgentStep,
   ChatTaskStatus,
   TaskStatus,
+  type AgentStepType,
   type ChatTaskStatusType,
 } from '@/types/constants';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
@@ -117,6 +118,22 @@ interface UploadOutcome {
   fileName: string;
   source: UploadFileSource;
   error?: unknown;
+}
+
+interface HistoryStepRecord {
+  id: number;
+  task_id: string;
+  step: AgentStepType;
+  data: AgentMessage['data'] | string;
+  timestamp?: number | null;
+}
+
+interface HistoryTaskLoadOptions {
+  question?: string;
+  summary?: string | null;
+  tokens?: number;
+  status?: number;
+  projectName?: string | null;
 }
 
 function getFileNameFromPath(filePath: string): string {
@@ -296,6 +313,11 @@ export interface ChatStore {
   setStatus: (taskId: string, status: ChatTaskStatusType) => void;
   setActiveTaskId: (taskId: string) => void;
   replay: (taskId: string, question: string, time: number) => Promise<void>;
+  loadHistoryTask: (
+    taskId: string,
+    fallbackQuestion: string,
+    options?: HistoryTaskLoadOptions
+  ) => Promise<void>;
   startTask: (
     taskId: string,
     type?: string,
@@ -1093,6 +1115,8 @@ const chatStore = (initial?: Partial<ChatStore>) =>
 
           const isMultiTurnSimpleAnswer =
             agentMessages.step === AgentStep.WAIT_CONFIRM;
+          const isSummaryTaskUpdate =
+            agentMessages.step === AgentStep.SUMMARY_TASK;
 
           if (!currentTask) {
             console.log(
@@ -1104,7 +1128,8 @@ const chatStore = (initial?: Partial<ChatStore>) =>
           if (
             currentTask.status === ChatTaskStatus.FINISHED &&
             !isTaskSwitchingEvent &&
-            !isMultiTurnSimpleAnswer
+            !isMultiTurnSimpleAnswer &&
+            !isSummaryTaskUpdate
           ) {
             // Ignore messages for finished tasks except:
             // 1. Task switching events (create new chatStore)
@@ -1354,6 +1379,24 @@ const chatStore = (initial?: Partial<ChatStore>) =>
                 }
                 delete streamingDecomposeTextTimers[currentId];
               }, 16);
+            }
+            return;
+          }
+
+          if (agentMessages.step === AgentStep.SUMMARY_TASK) {
+            const summaryTask = agentMessages.data?.summary_task as string;
+            if (!summaryTask) return;
+
+            setSummaryTask(currentTaskId, summaryTask);
+
+            if (!type && historyId) {
+              const obj = {
+                project_name: summaryTask.split('|')[0] || '',
+                summary: summaryTask.split('|')[1] || '',
+                status: 1,
+                tokens: getTokens(currentTaskId),
+              };
+              proxyFetchPut(`/api/v1/chat/history/${historyId}`, obj);
             }
             return;
           }
@@ -2852,6 +2895,422 @@ const chatStore = (initial?: Partial<ChatStore>) =>
       await startTask(taskId, 'replay', undefined, time);
       setActiveTaskId(taskId);
       handleConfirmTask(project_id, taskId, 'replay');
+    },
+
+    /**
+     * Load a stored task for history viewing without starting replay SSE,
+     * backend task execution, snapshot loading, or auto-confirm side effects.
+     */
+    loadHistoryTask: async (
+      taskId: string,
+      fallbackQuestion: string,
+      options?: HistoryTaskLoadOptions
+    ) => {
+      const question =
+        options?.question || fallbackQuestion.split('|')[0] || fallbackQuestion;
+      const summaryTask = [options?.projectName, options?.summary]
+        .filter(Boolean)
+        .join('|');
+      const messages: Message[] = [
+        {
+          id: generateUniqueId(),
+          role: 'user',
+          content: question,
+        },
+      ];
+      const agentNameMap: AgentNameMap = {
+        developer_agent: 'Developer Agent',
+        browser_agent: 'Browser Agent',
+        document_agent: 'Document Agent',
+        multi_modal_agent: 'Multi Modal Agent',
+        social_media_agent: 'Social Media Agent',
+      };
+      const taskInfo: TaskInfo[] = [];
+      const taskRunning: TaskInfo[] = [];
+      const taskAssigning: Agent[] = [];
+      const cotList: string[] = [];
+      let finalSummaryTask = summaryTask;
+      let endMessage = options?.summary || '';
+      let tokenTotal = options?.tokens || 0;
+      let hasTaskPlan = false;
+
+      get().create(taskId, 'history');
+
+      const steps = await proxyFetchGet('/api/v1/chat/steps', {
+        task_id: taskId,
+      }).catch((error) => {
+        console.error('Failed to load history steps:', error);
+        return [];
+      });
+      const orderedSteps: HistoryStepRecord[] = Array.isArray(steps)
+        ? [...steps].sort((a, b) => {
+            const timeA = a.timestamp ?? 0;
+            const timeB = b.timestamp ?? 0;
+            if (timeA !== timeB) return timeA - timeB;
+            return a.id - b.id;
+          })
+        : [];
+
+      for (const historyStep of orderedSteps) {
+        const stepData =
+          typeof historyStep.data === 'object' && historyStep.data !== null
+            ? historyStep.data
+            : {};
+        const agentMessage: AgentMessage = {
+          step: historyStep.step,
+          data: stepData,
+        };
+
+        if (historyStep.step === AgentStep.SUMMARY_TASK) {
+          finalSummaryTask =
+            (stepData.summary_task as string) || finalSummaryTask;
+          continue;
+        }
+
+        if (historyStep.step === AgentStep.TO_SUB_TASKS) {
+          hasTaskPlan = true;
+          finalSummaryTask =
+            (stepData.summary_task as string) || finalSummaryTask;
+          const nextTasks = (stepData.sub_tasks || []).map((task) => ({
+            ...task,
+            status: task.status || TaskStatus.EMPTY,
+          }));
+          taskInfo.splice(0, taskInfo.length, ...nextTasks);
+          taskRunning.splice(0, taskRunning.length, ...nextTasks);
+          messages.push({
+            id: generateUniqueId(),
+            role: 'agent',
+            content: '',
+            step: AgentStep.NOTICE_CARD,
+          });
+          messages.push({
+            id: generateUniqueId(),
+            role: 'agent',
+            content: '',
+            step: AgentStep.TO_SUB_TASKS,
+            taskType: 2,
+            showType: 'list',
+            isConfirm: true,
+            task_id: taskId,
+          });
+          continue;
+        }
+
+        if (historyStep.step === AgentStep.CREATE_AGENT) {
+          const { agent_name, agent_id, tools } = stepData;
+          if (
+            !agent_name ||
+            !agent_id ||
+            [
+              'mcp_agent',
+              'new_worker_agent',
+              'task_agent',
+              'task_summary_agent',
+              'coordinator_agent',
+              'question_confirm_agent',
+            ].includes(agent_name)
+          ) {
+            continue;
+          }
+          const hasAgent = taskAssigning.some(
+            (agent) => agent.agent_id === agent_id
+          );
+          if (!hasAgent) {
+            taskAssigning.push({
+              agent_id,
+              name: agentNameMap[agent_name as keyof AgentNameMap] || agent_name,
+              type: agent_name as AgentNameType,
+              tasks: [],
+              log: [],
+              img: [],
+              tools,
+              activeWebviewIds: [],
+            });
+          }
+          continue;
+        }
+
+        if (historyStep.step === AgentStep.ASSIGN_TASK) {
+          const { assignee_id, task_id, content = '', state, failure_count } =
+            stepData;
+          const assignee = taskAssigning.find(
+            (agent) => agent.agent_id === assignee_id
+          );
+          if (!assignee || !task_id) continue;
+          const existingTask =
+            taskInfo.find((task) => task.id === task_id) ||
+            ({
+              id: task_id,
+              content,
+              status:
+                state === TaskStatus.WAITING
+                  ? TaskStatus.WAITING
+                  : TaskStatus.RUNNING,
+            } as TaskInfo);
+          existingTask.status =
+            state === TaskStatus.WAITING
+              ? TaskStatus.WAITING
+              : TaskStatus.RUNNING;
+          existingTask.failure_count = failure_count || 0;
+          if (!assignee.tasks.some((task) => task.id === task_id)) {
+            assignee.tasks.push({ ...existingTask });
+          }
+          const runningIndex = taskRunning.findIndex(
+            (task) => task.id === task_id
+          );
+          const runningTask = {
+            ...existingTask,
+            agent: { ...assignee, tasks: [...assignee.tasks] },
+          };
+          if (runningIndex === -1) {
+            taskRunning.push(runningTask);
+          } else {
+            taskRunning[runningIndex] = runningTask;
+          }
+          continue;
+        }
+
+        if (historyStep.step === AgentStep.TASK_STATE) {
+          const { state, task_id, result, failure_count } = stepData;
+          const status =
+            state === 'DONE' ? TaskStatus.COMPLETED : TaskStatus.FAILED;
+          const runningTask = taskRunning.find((task) => task.id === task_id);
+          if (runningTask) {
+            runningTask.status = status;
+            runningTask.failure_count = failure_count || 0;
+            if (result) runningTask.report = result;
+          }
+          for (const agent of taskAssigning) {
+            const assignedTask = agent.tasks.find(
+              (task) => task.id === task_id && !task.reAssignTo
+            );
+            if (assignedTask) {
+              assignedTask.status = status;
+              assignedTask.failure_count = failure_count || 0;
+              if (result) assignedTask.report = result;
+            }
+          }
+          continue;
+        }
+
+        if (
+          historyStep.step === AgentStep.ACTIVATE_AGENT ||
+          historyStep.step === AgentStep.DEACTIVATE_AGENT
+        ) {
+          if (stepData.tokens) tokenTotal += stepData.tokens;
+          const agent = taskAssigning.find(
+            (item) => item.agent_id === stepData.agent_id
+          );
+          if (!agent) continue;
+          const filteredMessage = filterMessage(agentMessage);
+          if (historyStep.step === AgentStep.ACTIVATE_AGENT) {
+            agent.status = AgentStatusValue.RUNNING;
+            if (filteredMessage) {
+              agent.log.push({
+                ...filteredMessage,
+                status: AgentMessageStatus.RUNNING,
+              });
+            }
+          } else {
+            agent.status = AgentStatusValue.COMPLETED;
+            if (filteredMessage) {
+              const logIndex = agent.log.findLastIndex(
+                (log) =>
+                  log.data.method_name === stepData.method_name &&
+                  log.data.toolkit_name === stepData.toolkit_name
+              );
+              if (logIndex !== -1) {
+                agent.log[logIndex].status = AgentMessageStatus.COMPLETED;
+              }
+            }
+          }
+          const runningTask = taskRunning.find(
+            (task) => task.id === stepData.process_task_id
+          );
+          if (runningTask) {
+            runningTask.status =
+              historyStep.step === AgentStep.ACTIVATE_AGENT
+                ? TaskStatus.RUNNING
+                : runningTask.status;
+            runningTask.agent = { ...agent, tasks: [...agent.tasks] };
+          }
+          continue;
+        }
+
+        if (
+          historyStep.step === AgentStep.ACTIVATE_TOOLKIT ||
+          historyStep.step === AgentStep.DEACTIVATE_TOOLKIT
+        ) {
+          const processTaskId = resolveProcessTaskIdForToolkitEvent(
+            { [taskId]: { ...(get().tasks[taskId] as Task), taskRunning } },
+            taskId,
+            stepData.agent_name,
+            stepData.process_task_id
+          );
+          const agent = taskAssigning.find((item) =>
+            item.tasks.some((task) => task.id === processTaskId)
+          );
+          const filteredMessage = filterMessage(agentMessage);
+          if (agent && filteredMessage) agent.log.push(filteredMessage);
+          const targetTask =
+            agent?.tasks.find((task) => task.id === processTaskId) ||
+            taskRunning.find((task) => task.id === processTaskId);
+          if (targetTask && stepData.toolkit_name && stepData.method_name) {
+            targetTask.toolkits ??= [];
+            targetTask.toolkits.push({
+              toolkitName: stepData.toolkit_name,
+              toolkitMethods: stepData.method_name,
+              message: normalizeToolkitMessage(stepData.message),
+              toolkitStatus:
+                historyStep.step === AgentStep.ACTIVATE_TOOLKIT
+                  ? AgentStatusValue.RUNNING
+                  : AgentStatusValue.COMPLETED,
+            });
+          }
+          continue;
+        }
+
+        if (historyStep.step === AgentStep.TERMINAL) {
+          const targetTask = taskRunning.find(
+            (task) => task.id === stepData.process_task_id
+          );
+          if (targetTask) {
+            targetTask.terminal ??= [];
+            targetTask.terminal.push(stepData.output || '');
+          }
+          continue;
+        }
+
+        if (historyStep.step === AgentStep.WRITE_FILE) {
+          const filePath = stepData.file_path || '';
+          const fileName = filePath.replace(/\\/g, '/').split('/').pop() || '';
+          const fileInfo: FileInfo = {
+            name: fileName,
+            type: fileName.split('.').pop() || '',
+            path: filePath,
+            icon: FileText,
+          };
+          const targetTask = taskRunning.find(
+            (task) => task.id === stepData.process_task_id
+          );
+          if (targetTask) {
+            targetTask.fileList ??= [];
+            targetTask.fileList.push(fileInfo);
+          }
+          continue;
+        }
+
+        if (historyStep.step === AgentStep.NOTICE) {
+          if (stepData.process_task_id) {
+            const targetTask = taskRunning.find(
+              (task) => task.id === stepData.process_task_id
+            );
+            if (targetTask) {
+              targetTask.toolkits ??= [];
+              targetTask.toolkits.push({
+                toolkitName: 'notice',
+                toolkitMethods: '',
+                message: stepData.notice || '',
+                toolkitStatus: AgentStatusValue.RUNNING,
+              });
+            }
+          } else if (stepData.notice) {
+            cotList.push(stepData.notice);
+          }
+          continue;
+        }
+
+        if (historyStep.step === AgentStep.END) {
+          const rawEndMessage =
+            typeof historyStep.data === 'string'
+              ? historyStep.data
+              : normalizeToolkitMessage(historyStep.data);
+          endMessage =
+            rawEndMessage.match(/<summary>(.*?)<\/summary>/)?.[1] ||
+            rawEndMessage ||
+            endMessage;
+          continue;
+        }
+
+        const content =
+          stepData.content ||
+          stepData.notice ||
+          stepData.answer ||
+          stepData.question ||
+          (typeof historyStep.data === 'string' ? historyStep.data : '');
+        if (content) {
+          messages.push({
+            id: generateUniqueId(),
+            role: 'agent',
+            content,
+            step: historyStep.step,
+            isConfirm: false,
+          });
+        }
+      }
+
+      const fileList = taskRunning.flatMap((task) => task.fileList || []);
+      if (endMessage) {
+        messages.push({
+          id: generateUniqueId(),
+          role: 'agent',
+          content: endMessage,
+          step: AgentStep.END,
+          isConfirm: false,
+          fileList,
+        });
+      }
+
+      const completedTasks = taskRunning.filter(
+        (task) =>
+          task.status === TaskStatus.COMPLETED ||
+          task.status === TaskStatus.FAILED ||
+          task.status === TaskStatus.SKIPPED
+      ).length;
+      const progressValue =
+        taskRunning.length > 0
+          ? Math.round((completedTasks / taskRunning.length) * 100)
+          : 100;
+
+      set((state) => {
+        const task = state.tasks[taskId];
+        if (!task) return state;
+        return {
+          ...state,
+          activeTaskId: taskId,
+          tasks: {
+            ...state.tasks,
+            [taskId]: {
+              ...task,
+              type: 'history',
+              messages,
+              summaryTask: finalSummaryTask,
+              taskInfo,
+              taskRunning,
+              taskAssigning,
+              fileList,
+              activeAsk: '',
+              askList: [],
+              progressValue,
+              isPending: false,
+              activeWorkspace: 'workflow',
+              hasMessages: true,
+              activeAgent: '',
+              status:
+                options?.status === 1
+                  ? ChatTaskStatus.PAUSE
+                  : ChatTaskStatus.FINISHED,
+              taskTime: 0,
+              tokens: tokenTotal,
+              hasWaitComfirm: !hasTaskPlan,
+              cotList,
+              delayTime: 0,
+              isTaskEdit: false,
+              streamingDecomposeText: '',
+            },
+          },
+        };
+      });
     },
     setUpdateCount() {
       set((state) => ({

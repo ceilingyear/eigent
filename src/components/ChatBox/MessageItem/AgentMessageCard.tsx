@@ -105,11 +105,11 @@ export function AgentMessageCard({
                   window.ipcRenderer.invoke('reveal-in-folder', file.filePath);
                 }}
                 key={'attache-' + file.fileName}
-                className="flex w-full cursor-pointer items-center gap-2 rounded-2xl border border-solid border-task-border-default bg-message-fill-default py-1 pl-2"
+                className="flex w-full max-w-full cursor-pointer items-center gap-2 rounded-2xl border border-solid border-task-border-default bg-message-fill-default py-1 pl-2 pr-2"
               >
                 <FileText size={24} className="flex-shrink-0" />
-                <div className="flex flex-col">
-                  <div className="text-body max-w-48 overflow-hidden text-ellipsis whitespace-nowrap text-sm font-bold text-text-body">
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <div className="text-body w-full min-w-0 break-all text-sm font-bold leading-5 text-text-body">
                     {file?.fileName?.split('.')[0]}
                   </div>
                   <div className="text-xs font-medium leading-29 text-text-body">

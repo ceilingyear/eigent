@@ -64,14 +64,6 @@
       "schemes": ["eigent"]
     }
   ],
-  "publish": [
-    {
-      "provider": "github",
-      "owner": "eigent-ai",
-      "repo": "eigent",
-      "releaseType": "release"
-    }
-  ],
   "icon": "build/icon.ico",
   "afterPack": "./config/before-sign.cjs",
   "afterSign": "./config/notarize.cjs",

@@ -14,6 +14,7 @@
 
 import { generateUniqueId } from '@/lib';
 import { ChatTaskStatus } from '@/types/constants';
+import type { HistoryTask } from '@/types/history';
 import { create } from 'zustand';
 import { createChatStoreInstance, VanillaChatStore } from './chatStore';
 
@@ -96,7 +97,8 @@ interface ProjectStore {
     question: string,
     projectId: string,
     historyId?: string,
-    projectName?: string
+    projectName?: string,
+    historyTasks?: HistoryTask[]
   ) => Promise<string>;
 
   // Project-level queued messages management
@@ -635,7 +637,8 @@ const projectStore = create<ProjectStore>()((set, get) => ({
     question: string,
     projectId: string,
     historyId?: string,
-    projectName?: string
+    projectName?: string,
+    historyTasks?: HistoryTask[]
   ) => {
     const { projects, removeProject, createProject, createChatStore } = get();
 
@@ -651,13 +654,20 @@ const projectStore = create<ProjectStore>()((set, get) => ({
       displayName,
       `Loaded from history`,
       projectId,
-      ProjectType.REPLAY,
+      ProjectType.NORMAL,
       historyId
     );
 
     set({ activeProjectId: loadProjectId });
     console.log(
-      `[ProjectStore] Loading project ${loadProjectId} with ${taskIds.length} tasks (final state, no replay)`
+      `[ProjectStore] Loading project ${loadProjectId} with ${taskIds.length} tasks (static history state)`
+    );
+
+    const historyTaskMap = new Map(
+      (historyTasks || []).map((historyTask) => [
+        historyTask.task_id,
+        historyTask,
+      ])
     );
 
     let cancelled = false;
@@ -679,7 +689,14 @@ const projectStore = create<ProjectStore>()((set, get) => ({
         const chatStore = project.chatStores[chatId];
         if (chatStore) {
           try {
-            await chatStore.getState().replay(taskId, question, 0);
+            const historyTask = historyTaskMap.get(taskId);
+            await chatStore.getState().loadHistoryTask(taskId, question, {
+              question: historyTask?.question,
+              summary: historyTask?.summary,
+              tokens: historyTask?.tokens,
+              status: historyTask?.status,
+              projectName: historyTask?.project_name || projectName,
+            });
             console.log(`[ProjectStore] Loaded task ${taskId}`);
           } catch (error) {
             console.error(

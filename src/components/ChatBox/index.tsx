@@ -47,6 +47,7 @@ const getChatStoreTotalTokens = (chatStore: VanillaChatStore): number => {
 const USAGE_WARNING_RATIO = 0.75;
 const FREE_STARTING_CREDITS = 500;
 const API_CODE_TRIAL_LIMIT = '22';
+const AUTO_CONFIRM_SECONDS = 30;
 
 interface SubscriptionLimitInfo {
   plan_key?: string | null;
@@ -410,10 +411,16 @@ export default function ChatBox(): JSX.Element {
   const [isReplayLoading, setIsReplayLoading] = useState(false);
   const [isPauseResumeLoading, setIsPauseResumeLoading] = useState(false);
   const [projectTotalTokens, setProjectTotalTokens] = useState(0);
+  const [startTaskCountdown, setStartTaskCountdown] = useState<number | null>(
+    null
+  );
 
   const activeTaskId = chatStore?.activeTaskId;
-  const activeTaskMessages = chatStore?.tasks[activeTaskId as string]?.messages;
-  const activeAsk = chatStore?.tasks[activeTaskId as string]?.activeAsk;
+  const activeTask = activeTaskId
+    ? chatStore?.tasks[activeTaskId as string]
+    : undefined;
+  const activeTaskMessages = activeTask?.messages;
+  const activeAsk = activeTask?.activeAsk;
 
   useEffect(() => {
     if (!chatStore?.activeTaskId) return;
@@ -434,6 +441,44 @@ export default function ChatBox(): JSX.Element {
       : false;
     setHasSubTask(_hasSubTask);
   }, [chatStore, activeTaskId, activeTaskMessages]);
+
+  useEffect(() => {
+    if (!activeTask) {
+      setStartTaskCountdown(null);
+      return;
+    }
+
+    const pendingSubTaskMessage = activeTask.messages.findLast(
+      (message) =>
+        message.step === AgentStep.TO_SUB_TASKS && !message.isConfirm
+    );
+    const shouldShowCountdown = Boolean(
+      activeTask.status === ChatTaskStatus.PENDING &&
+        pendingSubTaskMessage &&
+        !activeTask.isTaskEdit &&
+        !loading
+    );
+
+    if (!shouldShowCountdown) {
+      setStartTaskCountdown(null);
+      return;
+    }
+
+    setStartTaskCountdown(AUTO_CONFIRM_SECONDS);
+    const interval = window.setInterval(() => {
+      setStartTaskCountdown((seconds) =>
+        seconds === null ? null : Math.max(seconds - 1, 0)
+      );
+    }, 1000);
+
+    return () => window.clearInterval(interval);
+  }, [
+    activeTask,
+    activeTaskMessages,
+    activeTask?.isTaskEdit,
+    activeTask?.status,
+    loading,
+  ]);
 
   useEffect(() => {
     if (!chatStore) return;
@@ -1481,6 +1526,7 @@ export default function ChatBox(): JSX.Element {
             onPauseResume={handlePauseResume}
             pauseResumeLoading={isPauseResumeLoading}
             loading={loading}
+            startTaskCountdown={startTaskCountdown}
             inputProps={{
               value: message,
               onChange: setMessage,

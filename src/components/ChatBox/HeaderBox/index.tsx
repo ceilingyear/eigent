@@ -43,8 +43,11 @@ export function HeaderBox({
   const { t } = useTranslation();
   const { appearance } = useAuthStore();
   const tokenIcon = appearance === 'dark' ? tokenDarkIcon : tokenLightIcon;
+  const isReplayEnabled =
+    import.meta.env.VITE_ENABLE_REPLAY !== 'false' &&
+    import.meta.env.VITE_DISABLE_REPLAY !== 'true';
 
-  const showReplayButton = status === 'finished';
+  const showReplayButton = isReplayEnabled && status === 'finished';
   const isReplayDisabled =
     status === 'running' || status === 'pending' || status === 'pause';
 

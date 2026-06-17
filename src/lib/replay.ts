@@ -14,6 +14,7 @@
 
 import { ChatStore } from '@/store/chatStore';
 import { ProjectStore } from '@/store/projectStore';
+import type { HistoryTask } from '@/types/history';
 import { NavigateFunction } from 'react-router-dom';
 
 /**
@@ -28,6 +29,7 @@ import { NavigateFunction } from 'react-router-dom';
  * @param historyId - The history ID
  * @param taskIdsList - Optional list of task IDs (defaults to [projectId])
  * @param projectName - Optional project display name
+ * @param historyTasks - Optional task metadata used to hydrate static history state
  */
 export const loadProjectFromHistory = async (
   projectStore: ProjectStore,
@@ -36,7 +38,8 @@ export const loadProjectFromHistory = async (
   question: string,
   historyId: string,
   taskIdsList?: string[],
-  projectName?: string
+  projectName?: string,
+  historyTasks?: HistoryTask[]
 ) => {
   const taskIds = taskIdsList || [projectId];
   await projectStore.loadProjectFromHistory(
@@ -44,7 +47,8 @@ export const loadProjectFromHistory = async (
     question,
     projectId,
     historyId,
-    projectName
+    projectName,
+    historyTasks
   );
   navigate({ pathname: '/' });
 };

@@ -62,7 +62,3 @@ All site-level settings live in `docs.json`:
 - **Theme / colors / logo** — edit the top-level fields (`theme`, `colors`, `logo`, `favicon`)
 - **Navbar links** — edit `navbar.links` and `navbar.primary`
 - **Footer socials** — edit `footer.socials`
-
-## Deployment
-
-Docs are deployed automatically by Mintlify on every push to the connected branch. No manual deploy step is needed — merging to `main` triggers a rebuild.

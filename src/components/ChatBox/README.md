@@ -25,6 +25,7 @@ ChatBox/
 ├── TaskType.tsx                 # Task type indicator
 ├── MarkDown.tsx                 # Markdown content rendering
 ├── SummaryMarkDown.tsx          # Summary markdown rendering
+├── HeaderBox/                   # Top bar with title, replay action, token total
 └── BottomBox/                   # Input and action components
     ├── index.tsx               # BottomBox container
     ├── InputBox.tsx            # Message input component
@@ -46,6 +47,7 @@ ChatBox/
 - Controls BottomBox state based on task status
 - Manages privacy settings and file attachments
 - Handles task confirmation and replay functionality
+- Owns the display-only task auto-confirm countdown passed to BottomBox
 
 **Relationships**:
 
@@ -206,8 +208,14 @@ The BottomBox directory contains input and action components:
 #### BoxHeader (`BottomBox/BoxHeader.tsx`)
 
 - **Purpose**: Header with task information
-- **Shows**: Task summary, progress, timing
+- **Shows**: Task summary, progress, timing, start-task auto-confirm countdown
 - **Used by**: BottomBox for task status display
+
+#### HeaderBox (`HeaderBox/index.tsx`)
+
+- **Purpose**: Top chat bar with title, replay entry, and token total
+- **Shows**: Replay button only when the task is finished and replay feature flags allow it
+- **Used by**: `index.tsx` for the persistent chat header
 
 ## Data Flow
 

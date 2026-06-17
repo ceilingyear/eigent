@@ -100,6 +100,9 @@ class TerminalToolkit(BaseTerminalToolkit, AbstractToolkit):
                 max_workers=1, thread_name_prefix="terminal_toolkit"
             )
 
+        self._clone_current_env_requested = clone_current_env
+        self._clone_env_lock = threading.Lock()
+
         super().__init__(
             timeout=timeout,
             working_directory=working_directory,
@@ -108,7 +111,7 @@ class TerminalToolkit(BaseTerminalToolkit, AbstractToolkit):
             session_logs_dir=session_logs_dir,
             safe_mode=safe_mode,
             allowed_commands=allowed_commands,
-            clone_current_env=True,
+            clone_current_env=False,
             install_dependencies=[],
         )
 
@@ -190,6 +193,28 @@ class TerminalToolkit(BaseTerminalToolkit, AbstractToolkit):
             if os.path.exists(self.cloned_env_path):
                 shutil.rmtree(self.cloned_env_path, ignore_errors=True)
             logger.warning("Falling back to system Python")
+
+    def _ensure_cloned_environment(self) -> None:
+        """Create the terminal environment lazily before first command use."""
+        if not self._clone_current_env_requested:
+            return
+
+        if getattr(self, "python_executable", None):
+            return
+
+        with self._clone_env_lock:
+            if getattr(self, "python_executable", None):
+                return
+
+            logger.info(
+                "Preparing terminal environment before first shell command",
+                extra={
+                    "api_task_id": self.api_task_id,
+                    "agent_name": self.agent_name,
+                },
+            )
+            self._setup_cloned_environment()
+            self._clone_current_env_requested = False
 
     def _get_venv_path(self):
         """Return the cloned venv path for shell activation."""
@@ -368,6 +393,8 @@ class TerminalToolkit(BaseTerminalToolkit, AbstractToolkit):
         Returns:
             str: The output of the command execution.
         """
+        self._ensure_cloned_environment()
+
         # Auto-generate ID if not provided
         if id is None:
             import time

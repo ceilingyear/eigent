@@ -109,6 +109,17 @@ class SearchToolkit(BaseSearchToolkit, AbstractToolkit):
         number_of_result_pages: int = 10,
         start_page: int = 1,
     ) -> list[dict[str, Any]]:
+        return self.search_google_raw(
+            query, search_type, number_of_result_pages, start_page
+        )
+
+    def search_google_raw(
+        self,
+        query: str,
+        search_type: str = "web",
+        number_of_result_pages: int = 10,
+        start_page: int = 1,
+    ) -> list[dict[str, Any]]:
         # Load user-specific configuration
         self._load_user_search_config()
 

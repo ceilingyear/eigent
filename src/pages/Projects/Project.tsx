@@ -18,10 +18,10 @@ import AlertDialog from '@/components/ui/alertDialog';
 import useChatStoreAdapter from '@/hooks/useChatStoreAdapter';
 import { loadProjectFromHistory } from '@/lib';
 import { share } from '@/lib/share';
-import { fetchHistoryTasks } from '@/service/historyApi';
 import { ChatTaskStatus } from '@/types/constants';
+import type { HistoryTask } from '@/types/history';
 import { Bird, CodeXml, FileText, Globe, Image } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 
@@ -31,7 +31,6 @@ export default function Project() {
   const [deleteCallback, setDeleteCallback] = useState<() => void>(() => {});
   const { chatStore, projectStore } = useChatStoreAdapter();
   // const { history_type, setHistoryType } = useGlobalStore();
-  const [_historyTasks, setHistoryTasks] = useState<any[]>([]);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [curHistoryId, setCurHistoryId] = useState('');
   const [deleteProjectModalOpen, setDeleteProjectModalOpen] = useState(false);
@@ -40,11 +39,6 @@ export default function Project() {
   const [projectDeleteCallback, setProjectDeleteCallback] = useState<
     (() => Promise<void>) | null
   >(null);
-
-  useEffect(() => {
-    if (!chatStore || !projectStore) return;
-    fetchHistoryTasks(setHistoryTasks);
-  }, [chatStore, projectStore]);
 
   if (!chatStore || !projectStore) {
     return <div>加载中...</div>;
@@ -142,7 +136,6 @@ export default function Project() {
     if (!id) return;
     try {
       await proxyFetchDelete(`/api/v1/chat/history/${id}`);
-      setHistoryTasks((list) => list.filter((item) => item.id !== id));
       if (chatStore.tasks[id]) {
         chatStore.removeTask(id);
       }
@@ -184,16 +177,11 @@ export default function Project() {
     share(taskId);
   };
 
-  const handleReplay = async (taskId: string, question: string) => {
-    chatStore.replay(taskId, question, 0);
-    navigate({ pathname: '/' });
-  };
-
   const handleSetActive = async (
     projectId: string,
     question: string,
     historyId: string,
-    project?: { tasks: { task_id: string }[]; project_name?: string }
+    project?: { tasks: HistoryTask[]; project_name?: string }
   ) => {
     const existingProject = projectStore.getProjectById(projectId);
     if (existingProject) {
@@ -211,7 +199,8 @@ export default function Project() {
         question,
         historyId,
         taskIdsList,
-        project?.project_name
+        project?.project_name,
+        project?.tasks
       );
     }
   };

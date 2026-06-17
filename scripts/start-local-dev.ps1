@@ -9,8 +9,9 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = (Resolve-Path (Join-Path $scriptDir '..')).Path
 $serverDir = Join-Path $repoRoot 'server'
 $logDir = Join-Path $repoRoot 'logs'
-$frontendOut = Join-Path $logDir 'local-frontend.out.log'
-$frontendErr = Join-Path $logDir 'local-frontend.err.log'
+$desktopOut = Join-Path $logDir 'local-desktop.out.log'
+$desktopErr = Join-Path $logDir 'local-desktop.err.log'
+$devServerUrl = 'http://127.0.0.1:7777/'
 
 function Assert-Command($name) {
   if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
@@ -60,6 +61,26 @@ function Wait-HttpOk($url, $timeoutSeconds) {
   return $false
 }
 
+function Wait-ElectronStarted($repoRoot, $timeoutSeconds) {
+  $deadline = (Get-Date).AddSeconds($timeoutSeconds)
+  do {
+    $process = Get-CimInstance Win32_Process -Filter "name = 'electron.exe'" -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.CommandLine -and
+        $_.CommandLine.IndexOf($repoRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+      } |
+      Select-Object -First 1
+
+    if ($process) {
+      return $true
+    }
+
+    Start-Sleep -Seconds 2
+  } while ((Get-Date) -lt $deadline)
+
+  return $false
+}
+
 Assert-Command docker
 Assert-Command npm
 
@@ -99,7 +120,7 @@ if (-not (Wait-HttpOk 'http://localhost:3001/health' 90)) {
 }
 Write-Host "Backend is ready: http://localhost:3001"
 
-Write-Host "Stopping existing local frontend processes..."
+Write-Host "Stopping existing local desktop dev processes..."
 Get-Process |
   Where-Object {
     ($_.ProcessName -eq 'electron' -and $_.Path -like "$repoRoot*") -or
@@ -112,35 +133,47 @@ Get-CimInstance Win32_Process -Filter "name = 'node.exe'" |
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
 Remove-Item -LiteralPath (Join-Path $repoRoot 'node_modules\.vite') -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $frontendOut, $frontendErr -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $desktopOut, $desktopErr -Force -ErrorAction SilentlyContinue
 
-Write-Host "Starting Vite frontend..."
-$env:VSCODE_DEBUG = 'true'
-$env:VITE_DEV_SERVER_URL = 'http://127.0.0.1:7777/'
+Write-Host "Starting desktop app with npm run dev..."
+Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+Remove-Item Env:VSCODE_DEBUG -ErrorAction SilentlyContinue
+Remove-Item Env:VITE_DEV_SERVER_URL -ErrorAction SilentlyContinue
+$env:VITE_BASE_URL = '/api'
+$env:VITE_PROXY_URL = 'http://localhost:3001'
+$env:VITE_USE_LOCAL_PROXY = 'true'
 Start-Process `
   -FilePath 'npm.cmd' `
-  -ArgumentList @('run', 'dev') `
+  -ArgumentList @('run', 'dev', '--', '--host', '127.0.0.1', '--port', '7777', '--strictPort') `
   -WorkingDirectory $repoRoot `
   -WindowStyle Hidden `
-  -RedirectStandardOutput $frontendOut `
-  -RedirectStandardError $frontendErr
+  -RedirectStandardOutput $desktopOut `
+  -RedirectStandardError $desktopErr
 
-if (-not (Wait-HttpOk 'http://127.0.0.1:7777/' 60)) {
-  Write-Host "Frontend stdout log: $frontendOut"
-  Write-Host "Frontend stderr log: $frontendErr"
-  throw "Frontend did not become ready at http://127.0.0.1:7777/"
+if (-not (Wait-HttpOk $devServerUrl 60)) {
+  Write-Host "Desktop stdout log: $desktopOut"
+  Write-Host "Desktop stderr log: $desktopErr"
+  throw "Desktop dev server did not become ready at $devServerUrl"
+}
+
+if (-not (Wait-ElectronStarted $repoRoot 90)) {
+  Write-Host "Desktop stdout log: $desktopOut"
+  Write-Host "Desktop stderr log: $desktopErr"
+  throw "Electron desktop app did not start. Check the desktop logs above."
 }
 
 Write-Host ""
 Write-Host "Local services are running:"
-Write-Host "  Frontend: http://127.0.0.1:7777/"
-Write-Host "  Backend:  http://localhost:3001"
+Write-Host "  Desktop: launched by npm run dev"
+Write-Host "  Dev UI:  $devServerUrl"
+Write-Host "  Backend: http://localhost:3001"
 Write-Host "  API docs: http://localhost:3001/docs"
 Write-Host ""
 Write-Host "Logs:"
-Write-Host "  $frontendOut"
-Write-Host "  $frontendErr"
+Write-Host "  $desktopOut"
+Write-Host "  $desktopErr"
 
 if ($OpenBrowser) {
-  Start-Process 'http://127.0.0.1:7777/'
+  Write-Host ""
+  Write-Host "OpenBrowser is ignored: this script starts the Electron desktop app."
 }

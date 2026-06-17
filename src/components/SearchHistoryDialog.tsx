@@ -31,6 +31,7 @@ import useChatStoreAdapter from '@/hooks/useChatStoreAdapter';
 import { loadProjectFromHistory } from '@/lib';
 import { fetchHistoryTasks } from '@/service/historyApi';
 import { useGlobalStore } from '@/store/globalStore';
+import type { HistoryTask } from '@/types/history';
 import { VisuallyHidden } from '@radix-ui/react-visually-hidden';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -50,7 +51,7 @@ export function SearchHistoryDialog() {
     projectId: string,
     question: string,
     historyId: string,
-    project?: { tasks: { task_id: string }[]; project_name?: string }
+    project?: { tasks: HistoryTask[]; project_name?: string }
   ) => {
     const existingProject = projectStore.getProjectById(projectId);
     if (existingProject) {
@@ -70,7 +71,8 @@ export function SearchHistoryDialog() {
         question,
         historyId,
         taskIdsList,
-        project?.project_name
+        project?.project_name,
+        project?.tasks
       );
     }
   };

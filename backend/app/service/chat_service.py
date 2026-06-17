@@ -14,6 +14,7 @@
 
 import asyncio
 import datetime
+import json
 import logging
 import platform
 from pathlib import Path
@@ -50,14 +51,18 @@ from app.agent.listen_chat_agent import ListenChatAgent
 from app.agent.prompt import build_remote_sub_agent_planning_notice
 from app.agent.toolkit.human_toolkit import HumanToolkit
 from app.agent.toolkit.note_taking_toolkit import NoteTakingToolkit
+from app.agent.toolkit.search_toolkit import SearchToolkit
 from app.agent.toolkit.skill_toolkit import SkillToolkit
 from app.agent.toolkit.terminal_toolkit import TerminalToolkit
 from app.agent.tools import get_mcp_tools, get_toolkits
+from app.component.environment import env
 from app.model.chat import Chat, NewAgent, Status, TaskContent, sse_json
 from app.service.task import (
     Action,
+    ActionActivateToolkitData,
     ActionDecomposeProgressData,
     ActionDecomposeTextData,
+    ActionDeactivateToolkitData,
     ActionImproveData,
     ActionInstallMcpData,
     ActionNewAgent,
@@ -73,6 +78,188 @@ from app.utils.telemetry.workforce_metrics import WorkforceMetricsCallback
 from app.utils.workforce import Workforce
 
 logger = logging.getLogger("chat_service")
+
+SEARCH_ONLY_KEYWORDS = (
+    "天气",
+    "新闻",
+    "搜索",
+    "搜一下",
+    "查一下",
+    "查询",
+    "官网",
+    "最新",
+    "今天",
+    "现在",
+    "当前",
+    "价格",
+    "汇率",
+    "政策",
+    "航班",
+    "比赛",
+    "赛程",
+    "search",
+    "lookup",
+    "weather",
+    "news",
+    "latest",
+    "today",
+    "current",
+    "price",
+    "official site",
+)
+
+BROWSER_REQUIRED_KEYWORDS = (
+    "打开",
+    "点击",
+    "登录",
+    "登陆",
+    "下载",
+    "截图",
+    "滚动",
+    "填写",
+    "提交",
+    "表单",
+    "爬取",
+    "抓取正文",
+    "open",
+    "click",
+    "login",
+    "download",
+    "screenshot",
+    "scroll",
+    "form",
+    "submit",
+)
+
+
+def should_use_search_only(question: str, attaches: list[str]) -> bool:
+    if attaches:
+        return False
+    normalized = question.strip().lower()
+    if not normalized:
+        return False
+    if any(keyword in normalized for keyword in BROWSER_REQUIRED_KEYWORDS):
+        return False
+    return any(keyword in normalized for keyword in SEARCH_ONLY_KEYWORDS)
+
+
+def search_config_available() -> bool:
+    has_user_google = bool(env("GOOGLE_API_KEY") and env("SEARCH_ENGINE_ID"))
+    has_cloud_search = bool(env("cloud_api_key") and env("SERVER_URL"))
+    return has_user_google or has_cloud_search
+
+
+def build_search_toolkit_event(
+    action: type[ActionActivateToolkitData] | type[ActionDeactivateToolkitData],
+    task_id: str,
+    message: str,
+):
+    return action(
+        data={
+            "agent_name": "search_agent",
+            "process_task_id": task_id,
+            "toolkit_name": SearchToolkit.toolkit_name(),
+            "method_name": "search_google",
+            "message": message,
+        }
+    )
+
+
+def compact_search_results(results: Any, max_results: int = 5) -> list[dict]:
+    if isinstance(results, dict):
+        candidates = (
+            results.get("items")
+            or results.get("results")
+            or results.get("organic_results")
+            or []
+        )
+    elif isinstance(results, list):
+        candidates = results
+    else:
+        candidates = []
+
+    compacted = []
+    for item in candidates[:max_results]:
+        if not isinstance(item, dict):
+            continue
+        compacted.append(
+            {
+                "title": item.get("title") or item.get("name") or "",
+                "link": item.get("link")
+                or item.get("url")
+                or item.get("href")
+                or "",
+                "snippet": item.get("snippet")
+                or item.get("description")
+                or item.get("summary")
+                or "",
+            }
+        )
+    return compacted
+
+
+async def build_search_only_answer(
+    question_agent: ListenChatAgent,
+    question: str,
+    options: Chat,
+    task_lock: TaskLock,
+) -> str | None:
+    if not search_config_available():
+        logger.info(
+            "Search-only route skipped: no search configuration",
+            extra={"project_id": options.project_id, "task_id": options.task_id},
+        )
+        return None
+
+    search_toolkit = SearchToolkit(
+        options.project_id, agent_name="search_agent"
+    )
+    raw_results = await asyncio.wait_for(
+        asyncio.to_thread(
+            search_toolkit.search_google_raw,
+            question,
+            "web",
+            1,
+            1,
+        ),
+        timeout=8,
+    )
+    search_results = compact_search_results(raw_results)
+    if not search_results:
+        logger.info(
+            "Search-only route returned no results",
+            extra={"project_id": options.project_id, "task_id": options.task_id},
+        )
+        return None
+
+    language_policy = build_output_language_policy(options.language)
+    prompt = f"""{language_policy}
+
+用户问题：
+{question}
+
+联网搜索结果（JSON）：
+{json.dumps(search_results, ensure_ascii=False)}
+
+请基于搜索结果直接回答用户。要求：
+1. 回答必须使用{get_output_language(options.language)}。
+2. 对天气、新闻、价格、政策等时效信息，说明这是基于当前联网搜索结果。
+3. 保留关键数值、单位、日期和地点。
+4. 最后用简短“来源”列出用到的链接。
+5. 如果搜索结果不足以可靠回答，说明信息不足，不要编造。
+"""
+    resp = question_agent.step(prompt)
+    if resp and resp.msgs:
+        answer = resp.msgs[0].content
+    else:
+        answer = ""
+    if not answer:
+        return None
+
+    task_lock.add_conversation("assistant", answer)
+    task_lock.last_task_result = answer
+    task_lock.status = Status.done
+    return answer
 
 
 def format_task_context(
@@ -646,6 +833,53 @@ async def step_solve(options: Chat, request: Request, task_lock: TaskLock):
                         task_lock.summary_generated = False
 
                     yield sse_json("confirmed", {"question": question})
+                    task_lock.status = Status.confirmed
+
+                    if should_use_search_only(question, attaches_to_use):
+                        activate_event = build_search_toolkit_event(
+                            ActionActivateToolkitData,
+                            options.task_id,
+                            f"with query '{question}', web type, 1 result page",
+                        )
+                        yield sse_json(
+                            "activate_toolkit", activate_event.data
+                        )
+                        try:
+                            search_answer = await build_search_only_answer(
+                                question_agent,
+                                question,
+                                options,
+                                task_lock,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Search-only route failed, "
+                                "falling back to workforce",
+                                extra={
+                                    "project_id": options.project_id,
+                                    "task_id": options.task_id,
+                                    "error": str(e),
+                                },
+                            )
+                            search_answer = None
+
+                        deactivate_message = (
+                            "search-only completed"
+                            if search_answer
+                            else "search-only unavailable, falling back"
+                        )
+                        deactivate_event = build_search_toolkit_event(
+                            ActionDeactivateToolkitData,
+                            options.task_id,
+                            deactivate_message,
+                        )
+                        yield sse_json(
+                            "deactivate_toolkit", deactivate_event.data
+                        )
+
+                        if search_answer:
+                            yield sse_json("end", search_answer)
+                            continue
 
                     context_for_coordinator = build_context_for_workforce(
                         task_lock, options, current_attaches=attaches_to_use
@@ -674,8 +908,6 @@ async def step_solve(options: Chat, request: Request, task_lock: TaskLock):
                                 format_agent_description(new_agent),
                                 await new_agent_model(new_agent, options),
                             )
-                    task_lock.status = Status.confirmed
-
                     # Create camel_task for the question
                     clean_task_content = question + options.summary_prompt
                     camel_task = Task(
@@ -771,61 +1003,10 @@ async def step_solve(options: Chat, request: Request, task_lock: TaskLock):
                             except Exception:
                                 pass
 
-                            # Generate task summary
-                            summary_task_agent = task_summary_agent(options)
-                            try:
-                                summary_task_content = await asyncio.wait_for(
-                                    summary_task(
-                                        summary_task_agent,
-                                        camel_task,
-                                        options.language,
-                                    ),
-                                    timeout=10,
-                                )
-                                task_lock.summary_generated = True
-                            except TimeoutError:
-                                logger.warning(
-                                    "summary_task timeout",
-                                    extra={
-                                        "project_id": options.project_id,
-                                        "task_id": options.task_id,
-                                    },
-                                )
-                                task_lock.summary_generated = True
-                                content_preview = (
-                                    camel_task.content
-                                    if hasattr(camel_task, "content")
-                                    else ""
-                                )
-                                if content_preview is None:
-                                    content_preview = ""
-                                if len(content_preview) > 80:
-                                    cp = content_preview[:80]
-                                    summary_task_content = cp + "..."
-                                else:
-                                    summary_task_content = content_preview
-                                task_label = get_task_label(options.language)
-                                summary_task_content = (
-                                    f"{task_label}|{summary_task_content}"
-                                )
-                            except Exception:
-                                task_lock.summary_generated = True
-                                content_preview = (
-                                    camel_task.content
-                                    if hasattr(camel_task, "content")
-                                    else ""
-                                )
-                                if content_preview is None:
-                                    content_preview = ""
-                                if len(content_preview) > 80:
-                                    cp = content_preview[:80]
-                                    summary_task_content = cp + "..."
-                                else:
-                                    summary_task_content = content_preview
-                                task_label = get_task_label(options.language)
-                                summary_task_content = (
-                                    f"{task_label}|{summary_task_content}"
-                                )
+                            summary_task_content = build_fallback_task_summary(
+                                camel_task, options.language
+                            )
+                            task_lock.summary_generated = False
 
                             state_holder["summary_task"] = summary_task_content
                             try:
@@ -848,6 +1029,71 @@ async def step_solve(options: Chat, request: Request, task_lock: TaskLock):
                             await task_lock.put_queue(
                                 ActionDecomposeProgressData(data=payload)
                             )
+
+                            async def generate_summary_in_background():
+                                nonlocal summary_task_content
+                                summary_task_agent = task_summary_agent(
+                                    options
+                                )
+                                try:
+                                    generated_summary = (
+                                        await asyncio.wait_for(
+                                            summary_task(
+                                                summary_task_agent,
+                                                camel_task,
+                                                options.language,
+                                            ),
+                                            timeout=10,
+                                        )
+                                    )
+                                    summary_task_content = generated_summary
+                                    state_holder["summary_task"] = (
+                                        generated_summary
+                                    )
+                                    task_lock.summary_task_content = (
+                                        generated_summary
+                                    )
+                                    task_lock.summary_generated = True
+                                    await task_lock.put_queue(
+                                        ActionDecomposeProgressData(
+                                            data={
+                                                "project_id": options.project_id,
+                                                "task_id": options.task_id,
+                                                "summary_task": generated_summary,
+                                                "summary_only": True,
+                                            }
+                                        )
+                                    )
+                                    logger.info(
+                                        "summary_task generated in background",
+                                        extra={
+                                            "project_id": options.project_id,
+                                            "task_id": options.task_id,
+                                        },
+                                    )
+                                except TimeoutError:
+                                    task_lock.summary_generated = True
+                                    logger.warning(
+                                        "summary_task background timeout",
+                                        extra={
+                                            "project_id": options.project_id,
+                                            "task_id": options.task_id,
+                                        },
+                                    )
+                                except Exception:
+                                    task_lock.summary_generated = True
+                                    logger.exception(
+                                        "summary_task background failed",
+                                        extra={
+                                            "project_id": options.project_id,
+                                            "task_id": options.task_id,
+                                        },
+                                    )
+
+                            summary_bg_task = asyncio.create_task(
+                                generate_summary_in_background()
+                            )
+                            task_lock.add_background_task(summary_bg_task)
                         except Exception as e:
                             logger.error(
                                 f"Error in background decomposition: {e}",
@@ -1429,62 +1675,62 @@ async def step_solve(options: Chat, request: Request, task_lock: TaskLock):
                             f"{n} subtasks"
                         )
 
-                        # Generate proper LLM summary
-                        # for multi-turn tasks instead
-                        # of hardcoded fallback
-                        try:
-                            multi_turn_summary_agent = task_summary_agent(
-                                options
-                            )
-                            new_summary_content = await asyncio.wait_for(
-                                summary_task(
-                                    multi_turn_summary_agent,
-                                    camel_task,
-                                    options.language,
-                                ),
-                                timeout=10,
-                            )
-                            logger.info(
-                                "Generated LLM summary for multi-turn task",
-                                extra={"project_id": options.project_id},
-                            )
-                        except TimeoutError:
-                            logger.warning(
-                                "Multi-turn summary_task timeout",
-                                extra={
-                                    "project_id": options.project_id,
-                                    "task_id": task_id,
-                                },
-                            )
-                            # Fallback to descriptive but not generic summary
-                            task_content_for_summary = new_task_content
-                            tc = task_content_for_summary
-                            task_label = get_task_label(
-                                options.language, follow_up=True
-                            )
-                            if len(tc) > 100:
-                                new_summary_content = (
-                                    f"{task_label}|{tc[:97]}..."
+                        new_summary_content = build_fallback_task_summary(
+                            camel_task,
+                            options.language,
+                            follow_up=True,
+                        )
+
+                        async def generate_multi_turn_summary_background():
+                            try:
+                                multi_turn_summary_agent = task_summary_agent(
+                                    options
                                 )
-                            else:
-                                new_summary_content = f"{task_label}|{tc}"
-                        except Exception as e:
-                            logger.error(
-                                "Error generating multi-turn "
-                                f"task summary: {e}"
-                            )
-                            # Fallback to descriptive but not generic summary
-                            task_content_for_summary = new_task_content
-                            tc = task_content_for_summary
-                            task_label = get_task_label(
-                                options.language, follow_up=True
-                            )
-                            if len(tc) > 100:
-                                new_summary_content = (
-                                    f"{task_label}|{tc[:97]}..."
+                                generated_summary = await asyncio.wait_for(
+                                    summary_task(
+                                        multi_turn_summary_agent,
+                                        camel_task,
+                                        options.language,
+                                    ),
+                                    timeout=10,
                                 )
-                            else:
-                                new_summary_content = f"{task_label}|{tc}"
+                                task_lock.summary_task_content = (
+                                    generated_summary
+                                )
+                                await task_lock.put_queue(
+                                    ActionDecomposeProgressData(
+                                        data={
+                                            "project_id": options.project_id,
+                                            "task_id": task_id,
+                                            "summary_task": generated_summary,
+                                            "summary_only": True,
+                                        }
+                                    )
+                                )
+                                logger.info(
+                                    "Generated LLM summary for multi-turn task",
+                                    extra={"project_id": options.project_id},
+                                )
+                            except TimeoutError:
+                                logger.warning(
+                                    "Multi-turn summary_task timeout",
+                                    extra={
+                                        "project_id": options.project_id,
+                                        "task_id": task_id,
+                                    },
+                                )
+                            except Exception as e:
+                                logger.error(
+                                    "Error generating multi-turn "
+                                    f"task summary: {e}"
+                                )
+
+                        multi_turn_summary_bg_task = asyncio.create_task(
+                            generate_multi_turn_summary_background()
+                        )
+                        task_lock.add_background_task(
+                            multi_turn_summary_bg_task
+                        )
 
                         # Emit final subtasks once when
                         # decomposition is complete
@@ -1609,7 +1855,10 @@ async def step_solve(options: Chat, request: Request, task_lock: TaskLock):
             elif item.action == Action.decompose_text:
                 yield sse_json("decompose_text", item.data)
             elif item.action == Action.decompose_progress:
-                yield sse_json("to_sub_tasks", item.data)
+                if item.data.get("summary_only"):
+                    yield sse_json("summary_task", item.data)
+                else:
+                    yield sse_json("to_sub_tasks", item.data)
             elif item.action == Action.new_agent:
                 if workforce is not None:
                     workforce.pause()
@@ -1921,6 +2170,19 @@ def to_sub_tasks(task: Task, summary_task_content: str):
     )
     logger.info("[TO-SUB-TASKS] ✅ to_sub_tasks SSE event created")
     return result
+
+
+def build_fallback_task_summary(
+    task: Task, language: str | None = None, follow_up: bool = False
+) -> str:
+    content_preview = task.content if hasattr(task, "content") else ""
+    if content_preview is None:
+        content_preview = ""
+    content_preview = str(content_preview).strip()
+    if len(content_preview) > 80:
+        content_preview = content_preview[:80] + "..."
+    task_label = get_task_label(language, follow_up=follow_up)
+    return f"{task_label}|{content_preview}"
 
 
 def tree_sub_tasks(sub_tasks: list[Task], depth: int = 0):
