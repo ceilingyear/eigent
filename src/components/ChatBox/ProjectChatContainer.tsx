@@ -1,0 +1,221 @@
+// ========= Copyright 2025-2026 @ Eigent.ai All Rights Reserved. =========
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ========= Copyright 2025-2026 @ Eigent.ai All Rights Reserved. =========
+
+import useChatStoreAdapter from '@/hooks/useChatStoreAdapter';
+import { AnimatePresence } from 'framer-motion';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { ProjectSection } from './ProjectSection';
+
+interface ProjectChatContainerProps {
+  className?: string;
+  // onPauseResume: () => void;  // Commented out - temporary not needed
+  onSkip: () => void;
+  isPauseResumeLoading: boolean;
+}
+
+export const ProjectChatContainer: React.FC<ProjectChatContainerProps> = ({
+  className = '',
+  // onPauseResume,  // Commented out - temporary not needed
+  onSkip,
+  isPauseResumeLoading,
+}) => {
+  const { projectStore, chatStore } = useChatStoreAdapter();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [activeQueryId, setActiveQueryId] = useState<string | null>(null);
+  const [lastMessageCount, setLastMessageCount] = useState(0);
+
+  // Get all chat stores for the active project
+  const activeProjectId = projectStore.activeProjectId;
+  const chatStores = useMemo(
+    () =>
+      activeProjectId ? projectStore.getAllChatStores(activeProjectId) : [],
+    [activeProjectId, projectStore]
+  );
+
+  // Extract messages array to avoid complex expression in dependency array
+  const activeTaskId = chatStore?.activeTaskId as string;
+  const messages = useMemo(
+    () => chatStore?.tasks[activeTaskId]?.messages || [],
+    [chatStore, activeTaskId]
+  );
+
+  // Scroll to bottom function
+  const scrollToBottom = useCallback(() => {
+    if (containerRef.current) {
+      setTimeout(() => {
+        // Double check containerRef is still valid before scrolling
+        if (containerRef.current) {
+          containerRef.current.scrollTo({
+            top: containerRef.current.scrollHeight,
+            behavior: 'smooth',
+          });
+        }
+      }, 100);
+    }
+  }, []);
+
+  // Monitor for new user messages and auto-scroll
+  useEffect(() => {
+    if (!chatStore || !activeProjectId) return;
+
+    if (!activeTaskId) return;
+
+    const task = chatStore.tasks[activeTaskId];
+    if (!task) return;
+
+    const currentMessageCount = messages.length;
+
+    // Check if a new user message was added
+    if (currentMessageCount > lastMessageCount) {
+      const lastMessage = messages[messages.length - 1];
+
+      // If the last message is from user, scroll to bottom
+      if (lastMessage && lastMessage.role === 'user') {
+        scrollToBottom();
+      }
+    }
+
+    // Use setTimeout to defer state update and avoid cascading renders
+    setTimeout(() => {
+      setLastMessageCount(currentMessageCount);
+    }, 0);
+  }, [
+    messages,
+    lastMessageCount,
+    scrollToBottom,
+    activeProjectId,
+    chatStore,
+    activeTaskId,
+  ]);
+
+  // Reset message count when active task changes
+  useEffect(() => {
+    // Use setTimeout to defer state update and avoid cascading renders
+    setTimeout(() => {
+      setLastMessageCount(0);
+    }, 0);
+  }, [chatStore?.activeTaskId]);
+
+  // Intersection Observer for scroll-based animations
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            const queryId = entry.target.getAttribute('data-query-id');
+            if (queryId) {
+              setActiveQueryId(queryId);
+            }
+          }
+        });
+      },
+      {
+        root: containerRef.current,
+        rootMargin: '-20% 0px -60% 0px', // Trigger when query is in upper portion
+        threshold: 0.1,
+      }
+    );
+
+    // Observe all query groups
+    const queryGroups =
+      containerRef.current.querySelectorAll('[data-query-id]');
+    queryGroups.forEach((group) => observer.observe(group));
+
+    return () => {
+      queryGroups.forEach((group) => observer.unobserve(group));
+    };
+  }, [chatStores]);
+
+  // Handle scrollbar visibility on scroll
+  useEffect(() => {
+    const scrollContainer = containerRef.current;
+    if (!scrollContainer) return;
+
+    const handleScroll = () => {
+      // Add scrolling class
+      scrollContainer.classList.add('scrolling');
+
+      // Clear existing timeout
+      if (scrollTimeoutRef.current) {
+        clearTimeout(scrollTimeoutRef.current);
+      }
+
+      // Remove scrolling class after 1 second of no scrolling
+      scrollTimeoutRef.current = setTimeout(() => {
+        scrollContainer.classList.remove('scrolling');
+      }, 1000);
+    };
+
+    scrollContainer.addEventListener('scroll', handleScroll);
+
+    return () => {
+      scrollContainer.removeEventListener('scroll', handleScroll);
+      if (scrollTimeoutRef.current) {
+        clearTimeout(scrollTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  return (
+    <div
+      ref={containerRef}
+      className={`scrollbar-always-visible relative z-10 flex flex-1 flex-col overflow-y-scroll ${className}`}
+    >
+      <AnimatePresence mode="popLayout">
+        {chatStores.map(({ chatId, chatStore }) => {
+          const chatState = chatStore.getState();
+          const activeTaskId = chatState.activeTaskId;
+
+          if (!activeTaskId || !chatState.tasks[activeTaskId]) {
+            return null;
+          }
+
+          const task = chatState.tasks[activeTaskId];
+          const messages = task.messages || [];
+
+          // Only render if there are actual user messages (not just empty or system messages)
+          const hasUserMessages = messages.some(
+            (msg: any) => msg.role === 'user' && msg.content
+          );
+
+          if (!hasUserMessages) {
+            return null;
+          }
+
+          return (
+            <ProjectSection
+              key={chatId}
+              chatId={chatId}
+              chatStore={chatStore}
+              activeQueryId={activeQueryId}
+              onQueryActive={setActiveQueryId}
+              // onPauseResume={onPauseResume}  // Commented out - temporary not needed
+              onSkip={onSkip}
+              isPauseResumeLoading={isPauseResumeLoading}
+            />
+          );
+        })}
+      </AnimatePresence>
+    </div>
+  );
+};
