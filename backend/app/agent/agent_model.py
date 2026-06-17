@@ -202,4 +202,5 @@ def agent_model(
         toolkits_to_register_agent=toolkits_to_register_agent,
         enable_snapshot_clean=enable_snapshot_clean,
         stream_accumulate=False,
+        output_language=options.language,
     )

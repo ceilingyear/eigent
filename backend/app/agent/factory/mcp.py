@@ -151,7 +151,7 @@ async def mcp_agent(options: Chat):
             timeout=600,  # 10 minutes
             **extra_params,
         ),
-        # output_language=options.language,
+        output_language=options.language,
         tools=tools,
         agent_id=agent_id,
     )

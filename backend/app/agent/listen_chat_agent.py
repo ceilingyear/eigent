@@ -36,6 +36,10 @@ from camel.types import ModelPlatformType, ModelType
 from camel.types.agents import ToolCallingRecord
 from pydantic import BaseModel
 
+from app.agent.language import (
+    append_output_language_policy,
+    get_output_language,
+)
 from app.service.task import (
     Action,
     ActionActivateAgentData,
@@ -50,14 +54,6 @@ from app.utils.event_loop_utils import _schedule_async_task
 
 # Logger for agent tracking
 logger = logging.getLogger("agent")
-
-DEFAULT_CHINESE_OUTPUT_POLICY = (
-    "\n\n<output_language_policy>\n"
-    "除非用户明确要求使用其他语言，否则所有面向用户的回复、"
-    "总结、计划、问题、状态说明和最终交付内容都必须使用简体中文。"
-    "保留代码、命令、文件路径、API 名称、专有名词和原文引用的原始格式。"
-    "\n</output_language_policy>"
-)
 
 
 class ListenChatAgent(ChatAgent):
@@ -106,10 +102,12 @@ class ListenChatAgent(ChatAgent):
         step_timeout: float | None = 1800,  # 30 minutes
         **kwargs: Any,
     ) -> None:
-        if isinstance(system_message, str):
-            system_message = f"{system_message}{DEFAULT_CHINESE_OUTPUT_POLICY}"
         if output_language is None:
-            output_language = "Chinese"
+            output_language = "English"
+        output_language = get_output_language(output_language)
+        system_message = append_output_language_policy(
+            system_message, output_language
+        )
 
         super().__init__(
             system_message=system_message,

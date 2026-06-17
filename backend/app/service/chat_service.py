@@ -41,6 +41,11 @@ from app.agent.factory.remote_sub_agent import (
     attach_remote_sub_agent_if_enabled,
     remote_sub_agent_enabled,
 )
+from app.agent.language import (
+    build_output_language_policy,
+    get_output_language,
+    get_task_label,
+)
 from app.agent.listen_chat_agent import ListenChatAgent
 from app.agent.prompt import build_remote_sub_agent_planning_notice
 from app.agent.toolkit.human_toolkit import HumanToolkit
@@ -550,11 +555,15 @@ async def step_solve(options: Chat, request: Request, task_lock: TaskLock):
                     conv_ctx = build_conversation_context(
                         task_lock, header="=== 历史对话 ==="
                     )
+                    language_policy = build_output_language_policy(
+                        options.language
+                    )
                     simple_answer_prompt = (
                         f"{conv_ctx}"
+                        f"{language_policy}\n\n"
                         f"用户问题：{question}\n\n"
                         "请直接、准确、有帮助地回答这个简单问题。"
-                        "除非用户明确要求其他语言，否则请使用简体中文。"
+                        f"回复必须使用{get_output_language(options.language)}。"
                     )
 
                     try:
@@ -640,6 +649,11 @@ async def step_solve(options: Chat, request: Request, task_lock: TaskLock):
 
                     context_for_coordinator = build_context_for_workforce(
                         task_lock, options, current_attaches=attaches_to_use
+                    )
+                    context_for_coordinator = (
+                        build_output_language_policy(options.language)
+                        + "\n\n"
+                        + context_for_coordinator
                     )
 
                     # Check if workforce exists - reuse
@@ -762,7 +776,9 @@ async def step_solve(options: Chat, request: Request, task_lock: TaskLock):
                             try:
                                 summary_task_content = await asyncio.wait_for(
                                     summary_task(
-                                        summary_task_agent, camel_task
+                                        summary_task_agent,
+                                        camel_task,
+                                        options.language,
                                     ),
                                     timeout=10,
                                 )
@@ -788,8 +804,9 @@ async def step_solve(options: Chat, request: Request, task_lock: TaskLock):
                                     summary_task_content = cp + "..."
                                 else:
                                     summary_task_content = content_preview
+                                task_label = get_task_label(options.language)
                                 summary_task_content = (
-                                    f"Task|{summary_task_content}"
+                                    f"{task_label}|{summary_task_content}"
                                 )
                             except Exception:
                                 task_lock.summary_generated = True
@@ -805,8 +822,9 @@ async def step_solve(options: Chat, request: Request, task_lock: TaskLock):
                                     summary_task_content = cp + "..."
                                 else:
                                     summary_task_content = content_preview
+                                task_label = get_task_label(options.language)
                                 summary_task_content = (
-                                    f"Task|{summary_task_content}"
+                                    f"{task_label}|{summary_task_content}"
                                 )
 
                             state_holder["summary_task"] = summary_task_content
@@ -1235,12 +1253,17 @@ async def step_solve(options: Chat, request: Request, task_lock: TaskLock):
                                 task_lock,
                                 header="=== 历史对话 ===",
                             )
+                            language_policy = build_output_language_policy(
+                                options.language
+                            )
                             simple_answer_prompt = (
                                 f"{conv_ctx}"
+                                f"{language_policy}\n\n"
                                 "用户问题："
                                 f"{new_task_content}"
                                 "\n\n请直接、准确、有帮助地回答这个简单问题。"
-                                "除非用户明确要求其他语言，否则请使用简体中文。"
+                                "回复必须使用"
+                                f"{get_output_language(options.language)}。"
                             )
 
                             try:
@@ -1323,6 +1346,11 @@ async def step_solve(options: Chat, request: Request, task_lock: TaskLock):
                         )
                         context_for_multi_turn = build_context_for_workforce(
                             task_lock, options
+                        )
+                        context_for_multi_turn = (
+                            build_output_language_policy(options.language)
+                            + "\n\n"
+                            + context_for_multi_turn
                         )
 
                         stream_state = {
@@ -1410,7 +1438,9 @@ async def step_solve(options: Chat, request: Request, task_lock: TaskLock):
                             )
                             new_summary_content = await asyncio.wait_for(
                                 summary_task(
-                                    multi_turn_summary_agent, camel_task
+                                    multi_turn_summary_agent,
+                                    camel_task,
+                                    options.language,
                                 ),
                                 timeout=10,
                             )
@@ -1429,12 +1459,15 @@ async def step_solve(options: Chat, request: Request, task_lock: TaskLock):
                             # Fallback to descriptive but not generic summary
                             task_content_for_summary = new_task_content
                             tc = task_content_for_summary
+                            task_label = get_task_label(
+                                options.language, follow_up=True
+                            )
                             if len(tc) > 100:
                                 new_summary_content = (
-                                    f"Follow-up Task|{tc[:97]}..."
+                                    f"{task_label}|{tc[:97]}..."
                                 )
                             else:
-                                new_summary_content = f"Follow-up Task|{tc}"
+                                new_summary_content = f"{task_label}|{tc}"
                         except Exception as e:
                             logger.error(
                                 "Error generating multi-turn "
@@ -1443,12 +1476,15 @@ async def step_solve(options: Chat, request: Request, task_lock: TaskLock):
                             # Fallback to descriptive but not generic summary
                             task_content_for_summary = new_task_content
                             tc = task_content_for_summary
+                            task_label = get_task_label(
+                                options.language, follow_up=True
+                            )
                             if len(tc) > 100:
                                 new_summary_content = (
-                                    f"Follow-up Task|{tc[:97]}..."
+                                    f"{task_label}|{tc[:97]}..."
                                 )
                             else:
-                                new_summary_content = f"Follow-up Task|{tc}"
+                                new_summary_content = f"{task_label}|{tc}"
 
                         # Emit final subtasks once when
                         # decomposition is complete
@@ -2002,14 +2038,20 @@ async def question_confirm(
         raise
 
 
-async def summary_task(agent: ListenChatAgent, task: Task) -> str:
-    prompt = f"""用户的任务如下：
+async def summary_task(
+    agent: ListenChatAgent, task: Task, language: str | None = None
+) -> str:
+    output_language = get_output_language(language)
+    language_policy = build_output_language_policy(language)
+    prompt = f"""{language_policy}
+
+用户的任务如下：
 ---
 {task.to_string()}
 ---
 你的要求：
-1. 为这个任务生成一个简短、描述清晰的中文任务名。
-2. 用简体中文概括任务的主要内容和目标。
+1. 为这个任务生成一个简短、描述清晰的任务名，必须使用{output_language}。
+2. 用{output_language}概括任务的主要内容和目标。
 3. 返回任务名和摘要，中间用竖线（|）分隔。
 
 示例格式："任务名称|这是任务摘要。"
@@ -2030,7 +2072,9 @@ async def summary_task(agent: ListenChatAgent, task: Task) -> str:
         raise
 
 
-async def summary_subtasks_result(agent: ListenChatAgent, task: Task) -> str:
+async def summary_subtasks_result(
+    agent: ListenChatAgent, task: Task, language: str | None = None
+) -> str:
     """
     Summarize the aggregated results from all subtasks into a concise summary.
 
@@ -2048,7 +2092,11 @@ async def summary_subtasks_result(agent: ListenChatAgent, task: Task) -> str:
         subtasks_info += f"结果：{subtask.result or '无结果'}\n"
         subtasks_info += "---\n"
 
-    prompt = f"""你是专业的任务总结助手。请用简体中文总结以下子任务结果。
+    output_language = get_output_language(language)
+    language_policy = build_output_language_policy(language)
+    prompt = f"""{language_policy}
+
+你是专业的任务总结助手。请用{output_language}总结以下子任务结果。
 
 主任务：{task.content}
 
@@ -2064,6 +2112,7 @@ async def summary_subtasks_result(agent: ListenChatAgent, task: Task) -> str:
 4. 使用项目符号或小节提升可读性
 5. 不要重复任务名称，直接进入结果总结
 6. 保持专业、自然、易读
+7. 如果子任务结果包含英文工具/API 输出，先翻译成{output_language}再总结
 
 总结：
 """
@@ -2104,7 +2153,7 @@ async def get_task_result_with_optional_summary(
         try:
             summary_agent = task_summary_agent(options)
             summarized_result = await summary_subtasks_result(
-                summary_agent, task
+                summary_agent, task, options.language
             )
             result = summarized_result
             logger.info(f"Successfully generated summary for task {task.id}")
