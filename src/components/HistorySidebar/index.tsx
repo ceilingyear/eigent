@@ -62,7 +62,10 @@ export default function HistorySidebar() {
     top: number;
   } | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const [currentProjectId, setCurrentProjectId] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<{
+    projectId: string;
+    historyId: string;
+  } | null>(null);
   const chatStoreUpdateCount = chatStore?.updateCount;
 
   useEffect(() => {
@@ -171,112 +174,128 @@ export default function HistorySidebar() {
     );
   };
 
-  const handleDelete = (id: string) => {
-    console.log('Delete task:', id);
-    setCurrentProjectId(id);
+  const getPrimaryHistoryTask = (project: ProjectGroup) => {
+    return project.tasks?.[0];
+  };
+
+  const removeHistoryTaskFromList = (
+    list: ProjectGroup[],
+    projectId: string,
+    historyId: string
+  ) => {
+    return list
+      .map((project) => {
+        if (project.project_id !== projectId) {
+          return project;
+        }
+
+        const tasks = project.tasks.filter(
+          (task) => String(task.id) !== historyId
+        );
+
+        if (tasks.length === 0) {
+          return null;
+        }
+
+        const totalTokens = tasks.reduce(
+          (sum, task) => sum + (task.tokens || 0),
+          0
+        );
+        const latestTask = tasks.reduce((latest, task) => {
+          const latestTime = new Date(latest.created_at || 0).getTime();
+          const taskTime = new Date(task.created_at || 0).getTime();
+          return taskTime > latestTime ? task : latest;
+        }, tasks[0]);
+
+        return {
+          ...project,
+          tasks,
+          task_count: tasks.length,
+          total_tokens: totalTokens,
+          latest_task_date:
+            latestTask.created_at || project.latest_task_date,
+          last_prompt:
+            latestTask.question || tasks[0]?.question || project.last_prompt,
+          total_completed_tasks: tasks.filter((task) => task.status === 2)
+            .length,
+          total_ongoing_tasks: tasks.filter((task) => task.status === 1)
+            .length,
+          average_tokens_per_task:
+            tasks.length > 0 ? Math.round(totalTokens / tasks.length) : 0,
+        };
+      })
+      .filter((project): project is ProjectGroup => project !== null);
+  };
+
+  const handleDelete = (projectId: string, historyId?: string) => {
+    if (!historyId) {
+      console.warn('No history ID found for delete:', projectId);
+      return;
+    }
+    console.log('Delete history task:', { projectId, historyId });
+    setDeleteTarget({ projectId, historyId });
     setDeleteModalOpen(true);
   };
 
-  // Deletes whole Project
   const confirmDelete = async () => {
-    await deleteWholeProject(currentProjectId);
-    setHistoryTasks((list) =>
-      list.filter((item) => item.project_id !== currentProjectId)
-    );
-    setCurrentProjectId('');
-    setDeleteModalOpen(false);
-  };
+    if (!deleteTarget) return;
 
-  const _deleteHistoryTask = async (
-    project: ProjectGroup,
-    historyId: string
-  ) => {
     try {
-      const res = await proxyFetchDelete(`/api/v1/chat/history/${historyId}`);
-      console.log(res);
-      // also delete local files for this task if available (via Electron IPC)
-      const { email } = getAuthStore();
-      const history = project.tasks.find(
-        (item: HistoryTask) => String(item.id) === historyId
+      const project = historyTasks.find(
+        (item) => item.project_id === deleteTarget.projectId
       );
-      if (history?.task_id && (window as any).ipcRenderer) {
-        try {
-          //TODO(file): rename endpoint to use project_id
-          //TODO(history): make sure to sync to projectId when updating endpoint
-          await (window as any).ipcRenderer.invoke(
-            'delete-task-files',
-            email,
-            history.task_id,
-            history.project_id ?? undefined
-          );
-        } catch (error) {
-          console.warn('Local file cleanup failed:', error);
-        }
+      if (!project) {
+        throw new Error(`Project ${deleteTarget.projectId} not found`);
+      }
+
+      await deleteHistoryTask(project, deleteTarget.historyId);
+      setHistoryTasks((list) =>
+        removeHistoryTaskFromList(
+          list,
+          deleteTarget.projectId,
+          deleteTarget.historyId
+        )
+      );
+
+      const remainingTasks =
+        project.tasks.filter(
+          (task) => String(task.id) !== deleteTarget.historyId
+        ).length;
+      if (remainingTasks === 0) {
+        projectStore.removeProject(deleteTarget.projectId);
       }
     } catch (error) {
       console.error('Failed to delete history task:', error);
+    } finally {
+      setDeleteTarget(null);
+      setDeleteModalOpen(false);
     }
   };
 
-  // Deletes whole project by using the tasks from historyTasks state
-  const deleteWholeProject = async (projectId: string) => {
-    try {
-      // Find the project in our existing data
-      const targetProject = historyTasks.find(
-        (project) => project.project_id === projectId
-      );
-
-      if (targetProject && targetProject.tasks) {
-        console.log(
-          `Found project ${projectId} with ${targetProject.tasks.length} tasks to delete`
+  const deleteHistoryTask = async (
+    project: ProjectGroup,
+    historyId: string
+  ) => {
+    const res = await proxyFetchDelete(`/api/v1/chat/history/${historyId}`);
+    console.log(res);
+    // also delete local files for this task if available (via Electron IPC)
+    const { email } = getAuthStore();
+    const history = project.tasks.find(
+      (item: HistoryTask) => String(item.id) === historyId
+    );
+    if (history?.task_id && (window as any).ipcRenderer) {
+      try {
+        //TODO(file): rename endpoint to use project_id
+        //TODO(history): make sure to sync to projectId when updating endpoint
+        await (window as any).ipcRenderer.invoke(
+          'delete-task-files',
+          email,
+          history.task_id,
+          history.project_id ?? undefined
         );
-
-        // Delete each task one by one
-        for (const history of targetProject.tasks) {
-          console.log(
-            `Deleting task: ${history.task_id} (history ID: ${history.id})`
-          );
-          try {
-            const deleteRes = await proxyFetchDelete(
-              `/api/v1/chat/history/${history.id}`
-            );
-            console.log(
-              `Successfully deleted task ${history.task_id}:`,
-              deleteRes
-            );
-
-            // Also delete local files for this task if available (via Electron IPC)
-            const { email } = getAuthStore();
-            if (history.task_id && (window as any).ipcRenderer) {
-              try {
-                await (window as any).ipcRenderer.invoke(
-                  'delete-task-files',
-                  email,
-                  history.task_id,
-                  history.project_id ?? undefined
-                );
-                console.log(
-                  `Successfully cleaned up local files for task ${history.task_id}`
-                );
-              } catch (error) {
-                console.warn(
-                  `Local file cleanup failed for task ${history.task_id}:`,
-                  error
-                );
-              }
-            }
-          } catch (error) {
-            console.error(`Failed to delete task ${history.task_id}:`, error);
-          }
-        }
-
-        projectStore.removeProject(projectId);
-        console.log(`Completed deletion of project ${projectId}`);
-      } else {
-        console.warn(`Project ${projectId} not found or has no tasks`);
+      } catch (error) {
+        console.warn('Local file cleanup failed:', error);
       }
-    } catch (error) {
-      console.error('Failed to delete whole project:', error);
     }
   };
 
@@ -496,113 +515,121 @@ export default function HistorySidebar() {
                         ?.toLowerCase()
                         .includes(searchValue.toLowerCase())
                   )
-                  .map((project) => (
-                    <div
-                      onClick={() => {
-                        handleSetActive(
-                          project.project_id,
-                          project.last_prompt,
-                          project.project_id
-                        );
-                      }}
-                      key={project.project_id}
-                      className="relative flex w-full max-w-full cursor-pointer items-center justify-between gap-sm rounded-xl border border-solid border-border-disabled bg-project-surface-default px-4 py-3 shadow-history-item transition-all duration-300 hover:bg-project-surface-hover"
-                    >
-                      <Sparkle
-                        size={20}
-                        className="flex-shrink-0 text-icon-secondary"
-                      />
+                  .map((project) => {
+                    const primaryHistory = getPrimaryHistoryTask(project);
+                    const historyId = primaryHistory?.id?.toString();
 
-                      <div className="min-w-0 flex-1">
-                        <TooltipSimple
-                          align="start"
-                          className="pointer-events-auto w-[300px] select-text text-wrap break-words bg-surface-tertiary p-2 text-label-xs shadow-perfect"
-                          content={
-                            <div>
+                    return (
+                      <div
+                        onClick={() => {
+                          handleSetActive(
+                            project.project_id,
+                            project.last_prompt,
+                            historyId || project.project_id
+                          );
+                        }}
+                        key={project.project_id}
+                        className="relative flex w-full max-w-full cursor-pointer items-center justify-between gap-sm rounded-xl border border-solid border-border-disabled bg-project-surface-default px-4 py-3 shadow-history-item transition-all duration-300 hover:bg-project-surface-hover"
+                      >
+                        <Sparkle
+                          size={20}
+                          className="flex-shrink-0 text-icon-secondary"
+                        />
+
+                        <div className="min-w-0 flex-1">
+                          <TooltipSimple
+                            align="start"
+                            className="pointer-events-auto w-[300px] select-text text-wrap break-words bg-surface-tertiary p-2 text-label-xs shadow-perfect"
+                            content={
+                              <div>
+                                {project.last_prompt ||
+                                  project.project_name ||
+                                  t('layout.new-project')}
+                              </div>
+                            }
+                          >
+                            <span className="block overflow-hidden text-ellipsis whitespace-nowrap text-body-sm font-semibold text-text-heading">
                               {project.last_prompt ||
                                 project.project_name ||
                                 t('layout.new-project')}
+                            </span>
+                          </TooltipSimple>
+                        </div>
+
+                        <div className="flex flex-shrink-0 items-center gap-2">
+                          <TooltipSimple content={t('chat.token')}>
+                            <Tag variant="info" size="sm">
+                              <Hash className="h-3.5 w-3.5" />
+                              <span className="text-xs">
+                                {(project.total_tokens || 0).toLocaleString()}
+                              </span>
+                            </Tag>
+                          </TooltipSimple>
+
+                          <TooltipSimple content="Tasks">
+                            <Tag variant="default" size="sm">
+                              <Pin className="h-3.5 w-3.5" />
+                              <span className="text-xs">
+                                {project.task_count}
+                              </span>
+                            </Tag>
+                          </TooltipSimple>
+                        </div>
+
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button
+                              size="icon"
+                              onClick={(e) => e.stopPropagation()}
+                              variant="ghost"
+                              className="flex-shrink-0"
+                            >
+                              <Ellipsis
+                                size={16}
+                                className="text-text-primary"
+                              />
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-[98px] rounded-[12px] border border-solid border-dropdown-border bg-dropdown-bg p-sm">
+                            <div className="space-y-1">
+                              <PopoverClose asChild>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="w-full"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleShare(project.project_id);
+                                  }}
+                                >
+                                  <Share size={16} />
+                                  {t('layout.share')}
+                                </Button>
+                              </PopoverClose>
+
+                              <PopoverClose asChild>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="w-full"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDelete(project.project_id, historyId);
+                                  }}
+                                >
+                                  <Trash2
+                                    size={16}
+                                    className="text-icon-primary group-hover:text-icon-cuation"
+                                  />
+                                  {t('layout.delete')}
+                                </Button>
+                              </PopoverClose>
                             </div>
-                          }
-                        >
-                          <span className="block overflow-hidden text-ellipsis whitespace-nowrap text-body-sm font-semibold text-text-heading">
-                            {project.last_prompt ||
-                              project.project_name ||
-                              t('layout.new-project')}
-                          </span>
-                        </TooltipSimple>
+                          </PopoverContent>
+                        </Popover>
                       </div>
-
-                      <div className="flex flex-shrink-0 items-center gap-2">
-                        <TooltipSimple content={t('chat.token')}>
-                          <Tag variant="info" size="sm">
-                            <Hash className="h-3.5 w-3.5" />
-                            <span className="text-xs">
-                              {(project.total_tokens || 0).toLocaleString()}
-                            </span>
-                          </Tag>
-                        </TooltipSimple>
-
-                        <TooltipSimple content="Tasks">
-                          <Tag variant="default" size="sm">
-                            <Pin className="h-3.5 w-3.5" />
-                            <span className="text-xs">
-                              {project.task_count}
-                            </span>
-                          </Tag>
-                        </TooltipSimple>
-                      </div>
-
-                      <Popover>
-                        <PopoverTrigger asChild>
-                          <Button
-                            size="icon"
-                            onClick={(e) => e.stopPropagation()}
-                            variant="ghost"
-                            className="flex-shrink-0"
-                          >
-                            <Ellipsis size={16} className="text-text-primary" />
-                          </Button>
-                        </PopoverTrigger>
-                        <PopoverContent className="w-[98px] rounded-[12px] border border-solid border-dropdown-border bg-dropdown-bg p-sm">
-                          <div className="space-y-1">
-                            <PopoverClose asChild>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="w-full"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleShare(project.project_id);
-                                }}
-                              >
-                                <Share size={16} />
-                                {t('layout.share')}
-                              </Button>
-                            </PopoverClose>
-
-                            <PopoverClose asChild>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="w-full"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDelete(project.project_id);
-                                }}
-                              >
-                                <Trash2
-                                  size={16}
-                                  className="text-icon-primary group-hover:text-icon-cuation"
-                                />
-                                {t('layout.delete')}
-                              </Button>
-                            </PopoverClose>
-                          </div>
-                        </PopoverContent>
-                      </Popover>
-                    </div>
-                  ))}
+                    );
+                  })}
               </div>
             </div>
           </motion.div>

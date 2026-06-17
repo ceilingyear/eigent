@@ -51,7 +51,7 @@ import {
   PromiseReturnType,
 } from './install-deps';
 import { setRoundedCorners } from './native/macos-window';
-import { registerUpdateIpcHandlers, update } from './update';
+// import { registerUpdateIpcHandlers, update } from './update';
 import {
   getEmailFolderPath,
   getEnvPath,
@@ -2402,7 +2402,7 @@ function registerIpcHandlers() {
   });
 
   // ==================== register update related handler ====================
-  registerUpdateIpcHandlers();
+  // registerUpdateIpcHandlers();
 }
 
 // ==================== ensure eigent directories ====================
@@ -2945,7 +2945,7 @@ async function createWindow() {
   startCdpHealthCheck();
 
   // ==================== auto update ====================
-  update(win);
+  // update(win);
 
   // ==================== CHECK IF INSTALLATION IS NEEDED BEFORE LOADING CONTENT ====================
   log.info('Pre-checking if dependencies need to be installed...');

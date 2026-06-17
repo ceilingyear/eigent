@@ -139,12 +139,12 @@ export default function Project() {
       if (chatStore.tasks[id]) {
         chatStore.removeTask(id);
       }
+      deleteCallback();
     } catch (error) {
       console.error('Failed to delete history task:', error);
     } finally {
       setCurHistoryId('');
       setDeleteModalOpen(false);
-      deleteCallback();
     }
   };
 

@@ -420,7 +420,7 @@ export const UserQueryGroup: React.FC<UserQueryGroupProps> = ({
               className="flex flex-col gap-4 px-sm"
             >
               {message.fileList && (
-                <div className="flex flex-wrap gap-2">
+                <div className="mt-1 flex flex-wrap gap-2">
                   {message.fileList.map((file: any, fileIndex: number) => (
                     <motion.div
                       key={`file-${message.id}-${file.name}-${fileIndex}`}
@@ -434,7 +434,7 @@ export const UserQueryGroup: React.FC<UserQueryGroupProps> = ({
                           'documentWorkSpace'
                         );
                       }}
-                      className="flex w-[120px] cursor-pointer items-center gap-2 rounded-2xl bg-message-fill-default px-2 py-1 transition-colors hover:bg-message-fill-hover"
+                      className="flex cursor-pointer items-center gap-2 rounded-2xl bg-message-fill-default px-2 py-1 transition-colors hover:bg-message-fill-hover"
                     >
                       <FileText
                         size={16}

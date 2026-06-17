@@ -15,7 +15,7 @@
 import { checkLocalServerStale } from '@/api/http';
 import ChatBox from '@/components/ChatBox';
 import Folder from '@/components/Folder';
-import UpdateElectron from '@/components/update';
+// import UpdateElectron from '@/components/update';
 import Workflow from '@/components/WorkFlow';
 import useChatStoreAdapter from '@/hooks/useChatStoreAdapter';
 import { ChatTaskStatus } from '@/types/constants';
@@ -847,7 +847,7 @@ export default function Home() {
             )}
           </ResizablePanelGroup>
         </div>
-        <UpdateElectron />
+        {/* <UpdateElectron /> */}
       </div>
     </ReactFlowProvider>
   );

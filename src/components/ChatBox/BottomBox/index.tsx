@@ -57,7 +57,6 @@ interface BottomBoxProps {
 
   // Loading states
   loading?: boolean;
-  startTaskCountdown?: number | null;
 }
 
 export default function BottomBox({
@@ -70,7 +69,6 @@ export default function BottomBox({
   inputProps,
   usageLimitBanner,
   loading = false,
-  startTaskCountdown = null,
 }: BottomBoxProps) {
   const enableQueuedBox = true; //TODO: Fix the reason of queued box disable in https://github.com/eigent-ai/eigent/issues/684
 
@@ -102,7 +100,6 @@ export default function BottomBox({
             onStartTask={onStartTask}
             onEdit={onEdit}
             loading={loading}
-            startTaskCountdown={startTaskCountdown}
           />
         )}
 

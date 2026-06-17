@@ -413,9 +413,6 @@ export type VanillaChatStore = {
   subscribe: (listener: (state: ChatStore) => void) => () => void;
 };
 
-// Track auto-confirm timers per task to avoid reusing stale timers across rounds
-const autoConfirmTimers: Record<string, ReturnType<typeof setTimeout>> = {};
-
 // Track active SSE connections for proper cleanup
 const activeSSEControllers: Record<string, AbortController> = {};
 
@@ -614,16 +611,6 @@ const chatStore = (initial?: Partial<ChatStore>) =>
       setProgressValue(activeTaskId as string, Number(taskProgress));
     },
     removeTask(taskId: string) {
-      // Clean up any pending auto-confirm timers when removing a task
-      try {
-        if (autoConfirmTimers[taskId]) {
-          clearTimeout(autoConfirmTimers[taskId]);
-          delete autoConfirmTimers[taskId];
-        }
-      } catch (error) {
-        console.warn('Error clearing auto-confirm timer in removeTask:', error);
-      }
-
       // Clean up SSE connection if it exists
       try {
         if (activeSSEControllers[taskId]) {
@@ -683,16 +670,6 @@ const chatStore = (initial?: Partial<ChatStore>) =>
             cleanupError
           );
         }
-      }
-
-      // Clean up any pending auto-confirm timers
-      try {
-        if (autoConfirmTimers[taskId]) {
-          clearTimeout(autoConfirmTimers[taskId]);
-          delete autoConfirmTimers[taskId];
-        }
-      } catch (error) {
-        console.warn('Error clearing auto-confirm timer in stopTask:', error);
       }
 
       // Update task status to finished - ensure this happens even if cleanup fails
@@ -1436,53 +1413,6 @@ const chatStore = (initial?: Partial<ChatStore>) =>
             // For multi-turn scenarios, always create a new to_sub_tasks message
             // even if one already exists from a previous task
             if (toSubTaskIndex === -1 || isMultiTurnAfterCompletion) {
-              // Clear any pending auto-confirm timer from previous rounds
-              try {
-                if (autoConfirmTimers[currentTaskId]) {
-                  clearTimeout(autoConfirmTimers[currentTaskId]);
-                  delete autoConfirmTimers[currentTaskId];
-                }
-              } catch (error) {
-                console.warn('Error clearing auto-confirm timer:', error);
-              }
-
-              // 30 seconds auto confirm
-              try {
-                autoConfirmTimers[currentTaskId] = setTimeout(() => {
-                  try {
-                    const currentStore = getCurrentChatStore();
-                    const currentId = getCurrentTaskId();
-                    const { tasks, handleConfirmTask, setIsTaskEdit } =
-                      currentStore;
-                    const message = tasks[currentId].messages.findLast(
-                      (item) => item.step === AgentStep.TO_SUB_TASKS
-                    );
-                    const isConfirm = message?.isConfirm || false;
-                    const isTakeControl = tasks[currentId].isTakeControl;
-
-                    if (
-                      project_id &&
-                      !isConfirm &&
-                      !isTakeControl &&
-                      !tasks[currentId].isTaskEdit
-                    ) {
-                      handleConfirmTask(project_id, currentId, type);
-                    }
-                    setIsTaskEdit(currentId, false);
-                    delete autoConfirmTimers[currentId];
-                  } catch (error) {
-                    console.error(
-                      'Error in auto-confirm timeout handler:',
-                      error
-                    );
-                    // Clean up the timer reference even if there's an error
-                    delete autoConfirmTimers[currentTaskId];
-                  }
-                }, 30000);
-              } catch (error) {
-                console.error('Error setting auto-confirm timer:', error);
-              }
-
               const newNoticeMessage: Message = {
                 id: generateUniqueId(),
                 role: 'agent',
@@ -1490,7 +1420,7 @@ const chatStore = (initial?: Partial<ChatStore>) =>
                 step: AgentStep.NOTICE_CARD,
               };
               addMessages(currentTaskId, newNoticeMessage);
-              const shouldAutoConfirm = !!type && !isMultiTurnAfterCompletion;
+              const shouldMarkConfirmed = !!type && !isMultiTurnAfterCompletion;
 
               const newMessage: Message = {
                 id: generateUniqueId(),
@@ -1499,8 +1429,8 @@ const chatStore = (initial?: Partial<ChatStore>) =>
                 step: agentMessages.step,
                 taskType: type ? 2 : 1,
                 showType: 'list',
-                // Don't auto-confirm for multi-turn complex tasks - show workforce splitting panel
-                isConfirm: shouldAutoConfirm,
+                // Playback/share flows arrive as already-confirmed historical steps.
+                isConfirm: shouldMarkConfirmed,
                 task_id: currentTaskId,
               };
               addMessages(currentTaskId, newMessage);
@@ -2899,7 +2829,7 @@ const chatStore = (initial?: Partial<ChatStore>) =>
 
     /**
      * Load a stored task for history viewing without starting replay SSE,
-     * backend task execution, snapshot loading, or auto-confirm side effects.
+     * backend task execution, snapshot loading, or confirmation side effects.
      */
     loadHistoryTask: async (
       taskId: string,
@@ -3018,7 +2948,8 @@ const chatStore = (initial?: Partial<ChatStore>) =>
           if (!hasAgent) {
             taskAssigning.push({
               agent_id,
-              name: agentNameMap[agent_name as keyof AgentNameMap] || agent_name,
+              name:
+                agentNameMap[agent_name as keyof AgentNameMap] || agent_name,
               type: agent_name as AgentNameType,
               tasks: [],
               log: [],
@@ -3031,8 +2962,13 @@ const chatStore = (initial?: Partial<ChatStore>) =>
         }
 
         if (historyStep.step === AgentStep.ASSIGN_TASK) {
-          const { assignee_id, task_id, content = '', state, failure_count } =
-            stepData;
+          const {
+            assignee_id,
+            task_id,
+            content = '',
+            state,
+            failure_count,
+          } = stepData;
           const assignee = taskAssigning.find(
             (agent) => agent.agent_id === assignee_id
           );
@@ -3536,19 +3472,6 @@ const chatStore = (initial?: Partial<ChatStore>) =>
       } = get();
       if (!taskId) return;
 
-      // Stop any pending auto-confirm timers for this task (manual confirmation)
-      try {
-        if (autoConfirmTimers[taskId]) {
-          clearTimeout(autoConfirmTimers[taskId]);
-          delete autoConfirmTimers[taskId];
-        }
-      } catch (error) {
-        console.warn(
-          'Error clearing auto-confirm timer in handleConfirmTask:',
-          error
-        );
-      }
-
       // record task start time
       setTaskTime(taskId, Date.now());
       // Filter out empty tasks from the user-edited taskInfo
@@ -3587,7 +3510,7 @@ const chatStore = (initial?: Partial<ChatStore>) =>
         setStatus(taskId, ChatTaskStatus.RUNNING);
       }
 
-      // Reset editing state after manual confirmation so next round can auto-start
+      // Reset editing state after manual confirmation.
       setIsTaskEdit(taskId, false);
     },
     addTaskInfo() {
@@ -3941,22 +3864,6 @@ const chatStore = (initial?: Partial<ChatStore>) =>
     clearTasks: () => {
       const { create } = get();
       console.log('clearTasks');
-
-      // Clean up all pending auto-confirm timers when clearing tasks
-      try {
-        Object.keys(autoConfirmTimers).forEach((taskId) => {
-          try {
-            if (autoConfirmTimers[taskId]) {
-              clearTimeout(autoConfirmTimers[taskId]);
-              delete autoConfirmTimers[taskId];
-            }
-          } catch (error) {
-            console.warn(`Error clearing timer for task ${taskId}:`, error);
-          }
-        });
-      } catch (error) {
-        console.error('Error during timer cleanup in clearTasks:', error);
-      }
 
       // Clean up all active SSE connections
       try {
