@@ -14,7 +14,7 @@
 
 import react from '@vitejs/plugin-react';
 import { execSync } from 'node:child_process';
-import { readFileSync, rmSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { defineConfig, loadEnv } from 'vite';
 import electron from 'vite-plugin-electron/simple';
@@ -34,8 +34,6 @@ try {
 
 // https://vitejs.dev/config/
 export default defineConfig(({ command, mode }) => {
-  rmSync('dist-electron', { recursive: true, force: true });
-
   const isServe = command === 'serve';
   const isBuild = command === 'build';
   const sourcemap = isServe || !!process.env.VSCODE_DEBUG;

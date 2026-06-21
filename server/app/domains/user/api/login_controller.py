@@ -58,7 +58,7 @@ async def auto_login(db_session: Session = Depends(session)) -> LoginResponse:
         with db_session as s:
             try:
                 user = User(
-                    email="admin@local.eigent.ai",
+                    email="admin",
                     username="admin",
                     nickname="Admin",
                     avatar="",

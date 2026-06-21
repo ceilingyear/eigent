@@ -129,7 +129,7 @@ export default function Home() {
       {/* welcome text */}
       <div className="flex w-full flex-row bg-gradient-to-b from-surface-primary to-surface-primary px-20 pt-16">
         <WordCarousel
-          words={[`${t('layout.welcome')}, ${welcomeName} !`]}
+          words={[`${t('layout.welcome')},admin !`]}
           className="text-heading-xl font-bold tracking-tight"
           rotateIntervalMs={100}
           sweepDurationMs={2000}

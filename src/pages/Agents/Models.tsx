@@ -494,7 +494,7 @@ export default function SettingModels() {
       return `${t('setting.local-model')} / ${platformName}${modelType ? ` (${modelType})` : ''}`;
     }
 
-    return t('setting.select-default-model');
+    return '选择预设模型';
   };
 
   // Check if a model is configured
@@ -1948,9 +1948,7 @@ export default function SettingModels() {
                       >
                         <SelectValue
                           placeholder={
-                            platformModelsLoading
-                              ? '模型加载中...'
-                              : '选择模型'
+                            platformModelsLoading ? '模型加载中...' : '选择模型'
                           }
                         />
                       </SelectTrigger>

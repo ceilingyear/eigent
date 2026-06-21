@@ -65,7 +65,7 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => {
       const translations: Record<string, string> = {
-        'layout.welcome-to-eigent': 'Welcome to Eigent',
+        'layout.welcome-to-eigent': 'Welcome to ATAI',
         'layout.how-can-i-help-you': 'How can I help you today?',
         'layout.it-ticket-creation': 'IT Ticket Creation',
         'layout.bank-transfer-csv-analysis':
@@ -77,7 +77,7 @@ vi.mock('react-i18next', () => ({
           'Analyze bank transfer CSV',
         'layout.find-duplicate-files-message': 'Find duplicate files',
         'chat.ask-placeholder': 'Type your message...',
-        'layout.by-messaging-eigent': 'By messaging Eigent, you agree to our',
+        'layout.by-messaging-eigent': 'By messaging ATAI, you agree to our',
         'layout.terms-of-use': 'Terms of Use',
         'layout.and': 'and',
         'layout.privacy-policy': 'Privacy Policy',
