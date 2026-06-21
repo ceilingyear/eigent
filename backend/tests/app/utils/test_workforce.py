@@ -383,6 +383,53 @@ async def test_handle_completed_task(mock_task_lock):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_handle_completed_task_blocks_premature_main_completion(
+    mock_task_lock,
+):
+    """Main task must not complete while root subtasks are unfinished."""
+    api_task_id = "test_api_task_123"
+    workforce = Workforce(
+        api_task_id=api_task_id, description="Test workforce"
+    )
+
+    main_task = Task(content="Main task", id="main")
+    subtask_1 = Task(content="Subtask 1", id="main.1", parent=main_task)
+    subtask_2 = Task(content="Subtask 2", id="main.2", parent=main_task)
+    subtask_1.state = TaskState.DONE
+    subtask_1.result = "done"
+    subtask_2.state = TaskState.OPEN
+    main_task.subtasks = [subtask_1, subtask_2]
+    main_task.state = TaskState.DONE
+    workforce._task = main_task
+    workforce._completed_tasks.append(subtask_1)
+
+    with (
+        patch(
+            "app.utils.workforce.get_task_lock",
+            return_value=mock_task_lock,
+        ),
+        patch.object(
+            workforce,
+            "_post_ready_tasks",
+            new_callable=AsyncMock,
+        ) as mock_post_ready,
+        patch.object(
+            workforce.__class__.__bases__[0],
+            "_handle_completed_task",
+            new_callable=AsyncMock,
+        ) as mock_super_handle,
+    ):
+        await workforce._handle_completed_task(main_task)
+
+        mock_task_lock.put_queue.assert_not_called()
+        mock_super_handle.assert_not_called()
+        mock_post_ready.assert_awaited_once()
+        assert main_task.state == TaskState.RUNNING
+        assert [task.id for task in workforce._pending_tasks] == ["main.2"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_handle_failed_task(mock_task_lock):
     """Test _handle_failed_task sends failure notification after max retries."""
     api_task_id = "test_api_task_123"

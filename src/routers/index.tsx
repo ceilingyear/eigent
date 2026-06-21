@@ -66,6 +66,7 @@ const ProtectedRoute = () => {
 
   const {
     token,
+    email,
     localProxyValue,
     logout,
     setAuth,
@@ -89,8 +90,11 @@ const ProtectedRoute = () => {
       }
     }
 
-    // Local mode: auto-login when no token
-    if (IS_LOCAL_MODE && !token) {
+    // Local mode: always use a token issued by the local server so
+    // auth-required local APIs such as /api/v1/providers keep working.
+    const shouldAutoLoginLocal =
+      IS_LOCAL_MODE && (!token || !email?.endsWith('@local.eigent.ai'));
+    if (shouldAutoLoginLocal) {
       proxyFetchPost('/api/v1/user/auto-login', {})
         .then((data) => {
           if (data && data.token) {
@@ -120,7 +124,17 @@ const ProtectedRoute = () => {
     }
 
     dispatch({ type: 'INITIALIZE', payload: { isAuthenticated: !!token } });
-  }, [token, localProxyValue, logout, setAuth, setLocalProxyValue]);
+  }, [
+    token,
+    email,
+    localProxyValue,
+    logout,
+    setAuth,
+    setLocalProxyValue,
+    setModelType,
+    setInitState,
+    setIsFirstLaunch,
+  ]);
 
   if (state.loading || !state.initialized) {
     return (

@@ -1,0 +1,5 @@
+category,annual_cost_usd,confidence,owner
+model_api,84000,medium,Finance
+browser_automation,18000,high,Engineering
+document_processing,26000,medium,Operations
+human_review,42000,low,Operations

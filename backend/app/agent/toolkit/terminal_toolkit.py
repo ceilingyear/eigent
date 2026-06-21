@@ -223,6 +223,12 @@ class TerminalToolkit(BaseTerminalToolkit, AbstractToolkit):
             return cloned_env_path
         return None
 
+    def _get_env_vars(self) -> dict[str, str]:
+        env_vars = super()._get_env_vars()
+        env_vars.setdefault("PYTHONIOENCODING", "utf-8")
+        env_vars.setdefault("PYTHONUTF8", "1")
+        return env_vars
+
     def _clone_venv_with_symlinks(self, source_venv: str, target_venv: str):
         """Clone a venv using symlinks for efficiency.
 
@@ -394,6 +400,8 @@ class TerminalToolkit(BaseTerminalToolkit, AbstractToolkit):
             str: The output of the command execution.
         """
         self._ensure_cloned_environment()
+        if platform.system() == "Windows" and "chcp 65001" not in command:
+            command = f"chcp 65001 >nul && {command}"
 
         # Auto-generate ID if not provided
         if id is None:

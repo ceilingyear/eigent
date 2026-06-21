@@ -149,6 +149,20 @@ class SearchToolkit(BaseSearchToolkit, AbstractToolkit):
                     del os.environ["SEARCH_ENGINE_ID"]
         else:
             # Fallback to cloud search
+            if not env("cloud_api_key"):
+                logger.warning(
+                    "Google Search requested but neither user Google "
+                    "credentials nor cloud_api_key are configured"
+                )
+                return [
+                    {
+                        "error": (
+                            "Google Search is not configured. Set "
+                            "GOOGLE_API_KEY and SEARCH_ENGINE_ID, or "
+                            "configure cloud_api_key for cloud search."
+                        )
+                    }
+                ]
             logger.info(
                 "Using cloud Google Search (no user configuration found)"
             )
@@ -391,10 +405,7 @@ class SearchToolkit(BaseSearchToolkit, AbstractToolkit):
         # if env("BRAVE_API_KEY"):
         #     tools.append(FunctionTool(search_toolkit.search_brave))
 
-        if (env("GOOGLE_API_KEY") and env("SEARCH_ENGINE_ID")) or env(
-            "cloud_api_key"
-        ):
-            tools.append(FunctionTool(search_toolkit.search_google))
+        tools.append(FunctionTool(search_toolkit.search_google))
 
         # if env("TAVILY_API_KEY"):
         #     tools.append(FunctionTool(search_toolkit.tavily_search))

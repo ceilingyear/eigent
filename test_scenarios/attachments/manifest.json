@@ -1,0 +1,19 @@
+{
+  "task1_multiformat_research": [
+    "market_brief_2026.pdf",
+    "meeting_notes.docx",
+    "finance_assumptions.csv",
+    "workflow_snapshot.png",
+    "prompt.md"
+  ],
+  "task2_dirty_excel_cleanup": [
+    "sales_ops_dirty_data.xlsx",
+    "prompt.md"
+  ],
+  "task3_code_logs_long_task": [
+    "sample_service.zip",
+    "runtime.log",
+    "requirements_change_request.md",
+    "prompt.md"
+  ]
+}

@@ -250,6 +250,11 @@ class Workforce(BaseWorkforce):
         self._pending_tasks.clear()
 
         self._pending_tasks.extendleft(reversed(subtasks))
+        logger.info(
+            "[WF-QUEUE] Initial pending subtasks: %s",
+            [task.id for task in subtasks],
+            extra={"api_task_id": self.api_task_id},
+        )
         self.save_snapshot("Initial task decomposition")
 
         try:
@@ -716,6 +721,89 @@ class Workforce(BaseWorkforce):
             f"[SYNC] Subtask {task.id} not found in parent.subtasks"
         )
 
+    def _root_subtasks(self) -> list[Task]:
+        if not self._task or not self._task.subtasks:
+            return []
+        return list(self._task.subtasks)
+
+    def _unfinished_root_subtasks(self) -> list[Task]:
+        completed_done_ids = {
+            task.id
+            for task in self._completed_tasks
+            if task.state == TaskState.DONE
+        }
+        unfinished = []
+        for task in self._root_subtasks():
+            if task.state == TaskState.DELETED:
+                continue
+            if task.id in completed_done_ids or task.state == TaskState.DONE:
+                continue
+            unfinished.append(task)
+        return unfinished
+
+    def _restore_missing_root_subtasks(self) -> list[Task]:
+        """Put unfinished root subtasks back into pending if CAMEL lost them.
+
+        Failure recovery in the upstream workforce can clean up task tracking
+        for the failed task while dependent sibling subtasks are still present
+        on the root task. If those sibling tasks are no longer pending or
+        in-flight, the base loop can exit early. This reconciliation keeps the
+        root task tree as the source of truth.
+        """
+        pending_ids = {task.id for task in self._pending_tasks}
+        in_flight_ids = set(getattr(self, "_task_start_times", {}).keys())
+        completed_ids = {task.id for task in self._completed_tasks}
+
+        missing = [
+            task
+            for task in self._unfinished_root_subtasks()
+            if task.id not in pending_ids
+            and task.id not in in_flight_ids
+            and task.id not in completed_ids
+        ]
+        if not missing:
+            return []
+
+        self._pending_tasks.extendleft(reversed(missing))
+        logger.warning(
+            "[WF-QUEUE] Restored missing unfinished subtasks to pending: %s",
+            [task.id for task in missing],
+            extra={"api_task_id": self.api_task_id},
+        )
+        return missing
+
+    def _remove_completed_main_task_if_premature(self) -> None:
+        if not self._task:
+            return
+        self._completed_tasks = [
+            task for task in self._completed_tasks if task.id != self._task.id
+        ]
+
+    async def _guard_premature_main_completion(self, task: Task) -> bool:
+        """Return True when a root task completion was blocked."""
+        if not self._task or task.id != self._task.id:
+            return False
+
+        unfinished = self._unfinished_root_subtasks()
+        if not unfinished:
+            return False
+
+        logger.warning(
+            "[WF-QUEUE] Blocking premature main task completion for %s; "
+            "unfinished subtasks=%s, pending=%s, in_flight=%s, completed=%s",
+            task.id,
+            [subtask.id for subtask in unfinished],
+            [subtask.id for subtask in self._pending_tasks],
+            self._in_flight_tasks,
+            [completed.id for completed in self._completed_tasks],
+            extra={"api_task_id": self.api_task_id},
+        )
+        task.state = TaskState.RUNNING
+        self._remove_completed_main_task_if_premature()
+        self._restore_missing_root_subtasks()
+        await self._post_ready_tasks()
+        return True
+
     async def _notify_task_completion(self, task: Task) -> None:
         """Send task completion notification to frontend.
 
@@ -778,8 +866,14 @@ class Workforce(BaseWorkforce):
         # TODO: CAMEL should handle this task sync or have a more
         # efficient sync
         self._sync_subtask_to_parent(task)
+        if await self._guard_premature_main_completion(task):
+            return
         await self._notify_task_completion(task)
         await super()._handle_completed_task(task)
+        if self._task and task.id != self._task.id:
+            restored = self._restore_missing_root_subtasks()
+            if restored:
+                await self._post_ready_tasks()
 
     async def _handle_failed_task(self, task: Task) -> bool:
         # DEBUG ▶ Task failed
