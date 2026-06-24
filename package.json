@@ -92,7 +92,7 @@
     "framer-motion": "^12.17.0",
     "github-markdown-css": "^5.8.1",
     "gsap": "^3.13.0",
-    "koffi": "^2.14.1",
+    "koffi": "^3.0.2",
     "lodash-es": "^4.17.21",
     "lottie-web": "^5.13.0",
     "lucide-react": "^0.509.0",
